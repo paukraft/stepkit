@@ -8,10 +8,10 @@ export type MergeOutputs<TOutputs extends readonly unknown[]> = UnionToIntersect
   TOutputs[number]
 >
 
-// Strict: no void returns allowed - step functions must return output
+// Step functions can return output or void (treated as {})
 export type StepFunction<TContext, TOutput extends Record<string, unknown>> = (
   context: TContext
-) => TOutput | Promise<TOutput>
+) => TOutput | Promise<TOutput> | void | Promise<void>
 
 export type MergePolicy = 'override' | 'error' | 'warn' | 'skip'
 

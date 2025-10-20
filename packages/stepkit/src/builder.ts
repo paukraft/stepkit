@@ -155,8 +155,9 @@ export class StepkitBuilder<
         const merged: Record<string, unknown> = {}
         for (const r of results) {
           if (r.status === 'fulfilled') {
-            const value = r.value
-            if (!isPlainObject(value)) throw new TypeError('Step function must return an object')
+            const value = r.value ?? {}
+            if (!isPlainObject(value))
+              throw new TypeError('Step function must return an object or void')
             const cloned = deepClone(value)
             const onCollision = (key: string) => runtime?.logFn?.(`⚠️ Key collision on '${key}'`)
             const out = mergeWithPolicy(merged, cloned, policy, onCollision)
@@ -169,8 +170,10 @@ export class StepkitBuilder<
       } else {
         const results = await Promise.all(allFns.map((fn) => Promise.resolve(fn(context))))
         return results.reduce<Record<string, unknown>>((acc, result) => {
-          if (!isPlainObject(result)) throw new TypeError('Step function must return an object')
-          const cloned = deepClone(result)
+          const value = result ?? {}
+          if (!isPlainObject(value))
+            throw new TypeError('Step function must return an object or void')
+          const cloned = deepClone(value)
           const onCollision = (key: string) => runtime?.logFn?.(`⚠️ Key collision on '${key}'`)
           return mergeWithPolicy(acc, cloned, policy, onCollision)
         }, {})
@@ -366,14 +369,10 @@ export class StepkitBuilder<
             when?: (ctx: TContext) => boolean | Promise<boolean>
             then?:
               | StepkitBuilder<TContext, any, any>
-              | ((
-                  builder: StepkitBuilder<any, TContext, any>
-                ) => StepkitBuilder<any, any, any>)
+              | ((builder: StepkitBuilder<any, TContext, any>) => StepkitBuilder<any, any, any>)
             default?:
               | StepkitBuilder<TContext, any, any>
-              | ((
-                  builder: StepkitBuilder<any, TContext, any>
-                ) => StepkitBuilder<any, any, any>)
+              | ((builder: StepkitBuilder<any, TContext, any>) => StepkitBuilder<any, any, any>)
           }
         | undefined
       let defaultCase:
@@ -381,17 +380,14 @@ export class StepkitBuilder<
             name?: string
             default:
               | StepkitBuilder<TContext, any, any>
-              | ((
-                  builder: StepkitBuilder<any, TContext, any>
-                ) => StepkitBuilder<any, any, any>)
+              | ((builder: StepkitBuilder<any, TContext, any>) => StepkitBuilder<any, any, any>)
           }
         | undefined
 
       for (const c of cases) {
         if (
           'default' in c &&
-          (typeof (c as any).default === 'function' ||
-            (c as any).default instanceof StepkitBuilder)
+          (typeof (c as any).default === 'function' || (c as any).default instanceof StepkitBuilder)
         ) {
           defaultCase = c as any
           continue
@@ -430,11 +426,9 @@ export class StepkitBuilder<
         const def = (chosen as any).default
         built =
           typeof def === 'function'
-            ? (
-                def as (
-                  b: StepkitBuilder<any, TContext, any>
-                ) => StepkitBuilder<any, any, any>
-              )(base as StepkitBuilder<any, TContext, any>)
+            ? (def as (b: StepkitBuilder<any, TContext, any>) => StepkitBuilder<any, any, any>)(
+                base as StepkitBuilder<any, TContext, any>
+              )
             : (def as StepkitBuilder<TContext, any, any>)
       }
 
@@ -791,26 +785,51 @@ export class StepkitBuilder<
 
         // Validate outputs and merge
         if (stepExecutor.replaceContext) {
-          if (!isPlainObject(stepOutput)) throw new TypeError('Transform must return an object')
+          // Transform must return a value (not void/undefined)
+          if (stepOutput === null || stepOutput === undefined) {
+            throw new TypeError(
+              `Transform '${displayName}' must return an object, not ${stepOutput === null ? 'null' : 'undefined'}. ` +
+                'Transforms replace the entire context, so returning nothing would clear all data. ' +
+                'Return at least an empty object {} if you want to clear the context intentionally.'
+            )
+          }
+          if (!isPlainObject(stepOutput)) {
+            throw new TypeError(`Transform '${displayName}' must return a plain object`)
+          }
           context = deepClone(stepOutput as Record<string, unknown>)
+          const duration = Date.now() - startTime
+          if (stepLog) {
+            if (runtime.showStepDuration)
+              runtime.logFn(`✅ ${displayName} completed in ${formatDuration(duration)}`)
+            else runtime.logFn(`✅ ${displayName} completed`)
+            if (stepOutput && Object.keys(stepOutput).length > 0)
+              runtime.logFn('   Output:', Object.keys(stepOutput).join(', '))
+          }
+          if (runtime.stopwatchEnabled)
+            runtime.stepTimings.push({ name: displayName, duration, status: 'success' })
+          runtime.onStepComplete?.(displayName, stepOutput, duration)
         } else {
-          if (!isPlainObject(stepOutput)) throw new TypeError('Step must return an object')
+          // Steps can return void (treated as {})
+          const normalizedOutput = stepOutput ?? {}
+          if (!isPlainObject(normalizedOutput)) {
+            throw new TypeError(`Step '${displayName}' must return an object or void`)
+          }
           const policy = stepExecutor.config.mergePolicy ?? 'override'
-          const cloned = deepClone(stepOutput as Record<string, unknown>)
+          const cloned = deepClone(normalizedOutput as Record<string, unknown>)
           const onCollision = (key: string) => runtime.logFn(`⚠️ Key collision on '${key}'`)
           context = mergeWithPolicy(context as Record<string, unknown>, cloned, policy, onCollision)
+          const duration = Date.now() - startTime
+          if (stepLog) {
+            if (runtime.showStepDuration)
+              runtime.logFn(`✅ ${displayName} completed in ${formatDuration(duration)}`)
+            else runtime.logFn(`✅ ${displayName} completed`)
+            if (normalizedOutput && Object.keys(normalizedOutput).length > 0)
+              runtime.logFn('   Output:', Object.keys(normalizedOutput).join(', '))
+          }
+          if (runtime.stopwatchEnabled)
+            runtime.stepTimings.push({ name: displayName, duration, status: 'success' })
+          runtime.onStepComplete?.(displayName, normalizedOutput, duration)
         }
-        const duration = Date.now() - startTime
-        if (stepLog) {
-          if (runtime.showStepDuration)
-            runtime.logFn(`✅ ${displayName} completed in ${formatDuration(duration)}`)
-          else runtime.logFn(`✅ ${displayName} completed`)
-          if (stepOutput && Object.keys(stepOutput).length > 0)
-            runtime.logFn('   Output:', Object.keys(stepOutput).join(', '))
-        }
-        if (runtime.stopwatchEnabled)
-          runtime.stepTimings.push({ name: displayName, duration, status: 'success' })
-        runtime.onStepComplete?.(displayName, stepOutput, duration)
       } catch (error) {
         // Circuit breaker state management (on failure)
         const cb = stepExecutor.config.circuitBreaker
