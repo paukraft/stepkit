@@ -40,7 +40,7 @@ const evaluator = stepkit<{ idea: string }>()
   )
   .step('evaluate', async ({ idea, marketSize, competition, successStories }) => {
     const { text } = await generateText({
-      model: openai('gpt-4'),
+      model: openai('gpt-4.1'),
       prompt: `Rate this idea (1-10): "${idea}"\nMarket: ${marketSize}, Competition: ${competition}`,
     })
     return { evaluation: text }
@@ -55,7 +55,7 @@ await evaluator.run({ idea: 'AI-powered plant waterer' })
 const moderator = stepkit<{ content: string }>()
   .step('analyze', async ({ content }) => {
     const { text } = await generateText({
-      model: openai('gpt-4'),
+      model: openai('gpt-4.1'),
       prompt: `Analyze this content. Respond with: "safe", "suspicious", or "dangerous"\n\n${content}`,
     })
     return { riskLevel: text.trim().toLowerCase() }
@@ -97,7 +97,7 @@ import { StepOutput } from 'stepkit'
 const classify = stepkit<{ prompt: string }>()
   .step('classify', async ({ prompt }) => {
     const { text } = await generateText({
-      model: openai('gpt-4'),
+      model: openai('gpt-4.1'),
       prompt: `Is this a question or statement? One word.\n\n${prompt}`,
     })
     return { type: text.trim().toLowerCase() }
@@ -110,7 +110,7 @@ type Classified = StepOutput<typeof classify, 'classify'>
 const handleQuestion = stepkit<Classified>()
   .step('answer', async ({ prompt }) => {
     const { text } = await generateText({
-      model: openai('gpt-4'),
+      model: openai('gpt-4.1'),
       prompt: `Answer: ${prompt}`,
     })
     return { response: text }
