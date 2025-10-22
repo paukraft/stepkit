@@ -38,3 +38,9 @@ yarn-error.log*
 *.pem
 
 *.local.ts
+
+# npm pack tarballs
+*.tgz
+
+# pnpm store cache
+.pnpm-store
