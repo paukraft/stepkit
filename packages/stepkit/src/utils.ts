@@ -33,3 +33,51 @@ export const mergeWithPolicy = (
   }
   return out
 }
+
+const deepEqual = (a: unknown, b: unknown): boolean => {
+  if (a === b) return true
+  if (a === null || b === null) return a === b
+  const ta = typeof a
+  const tb = typeof b
+  if (ta !== tb) return false
+  if (a instanceof Date && b instanceof Date) return a.getTime() === b.getTime()
+  if (Array.isArray(a) && Array.isArray(b)) {
+    if (a.length !== b.length) return false
+    for (let i = 0; i < a.length; i++) if (!deepEqual(a[i], b[i])) return false
+    return true
+  }
+  if (isPlainObject(a) && isPlainObject(b)) {
+    const ak = Object.keys(a)
+    const bk = Object.keys(b)
+    if (ak.length !== bk.length) return false
+    for (const k of ak) if (!deepEqual((a as any)[k], (b as any)[k])) return false
+    return true
+  }
+  return false
+}
+
+export const computePatch = (
+  base: Record<string, unknown>,
+  next: Record<string, unknown>
+): Record<string, unknown> => {
+  const patch: Record<string, unknown> = {}
+  const nextEntries = Object.entries(next)
+  for (const [key, value] of nextEntries) {
+    if (!Object.prototype.hasOwnProperty.call(base, key)) {
+      patch[key] = value
+      continue
+    }
+    const prev = (base as any)[key]
+    if (!deepEqual(prev, value)) patch[key] = value
+  }
+  return patch
+}
+
+export const mergeContext = (
+  base: Record<string, unknown>,
+  patch: Record<string, unknown>,
+  policy: MergePolicy,
+  onCollision?: (key: string) => void
+): Record<string, unknown> => {
+  return mergeWithPolicy(base, patch, policy, onCollision)
+}

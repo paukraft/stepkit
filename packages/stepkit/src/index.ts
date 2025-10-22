@@ -1,9 +1,8 @@
 import { StepkitBuilder } from './builder'
 import type { PipelineConfig } from './runtime'
 
-export const stepkit = <TInput extends Record<string, unknown> = Record<string, unknown>>(
-  config?: PipelineConfig
-) => new StepkitBuilder<TInput, TInput>(config)
+export const stepkit = <TInput extends Record<string, unknown> = {}>(config?: PipelineConfig) =>
+  new StepkitBuilder<TInput, TInput>(config)
 
 /**
  * Extract all step names from a pipeline builder.
@@ -20,7 +19,11 @@ export type StepNames<TBuilder> = TBuilder extends {
   __history: readonly (infer TRecord)[]
 }
   ? TRecord extends { name: infer TName }
-    ? TName
+    ? TName extends string
+      ? string extends TName
+        ? never
+        : TName
+      : never
     : never
   : never
 
@@ -36,6 +39,16 @@ export type StepNames<TBuilder> = TBuilder extends {
  * type ProcessInput = StepInput<typeof pipeline, 'process'>
  * // { id: string; name: string }
  */
+type WithoutIndex<T> = {
+  [K in keyof T as string extends K
+    ? never
+    : number extends K
+      ? never
+      : symbol extends K
+        ? never
+        : K]: T[K]
+}
+
 export type StepInput<TBuilder, TName extends StepNames<TBuilder>> = TBuilder extends {
   __history: readonly (infer TRecord)[]
 }
@@ -53,27 +66,33 @@ type BuilderHistory<TBuilder> = TBuilder extends { __history: infer TH }
 type BuilderFinalContext<TBuilder> =
   TBuilder extends StepkitBuilder<any, infer TCtx, any> ? TCtx : never
 
-type StepOutputFromHistory<TH, TFinalCtx, TName extends string> = TH extends readonly [
-  infer TFirst,
-  ...infer TRest
-]
+type StepAfterCtxMap<TH, TFinalCtx> = TH extends readonly [infer TFirst, ...infer TRest]
   ? TFirst extends { name: infer TStepName; ctx: any }
-    ? TStepName extends TName
-      ? TRest extends readonly [infer _TNext, infer TNext2, ...infer _]
-        ? TNext2 extends { ctx: infer TNext2Ctx }
-          ? TNext2Ctx
-          : TFinalCtx
-        : TFinalCtx
-      : StepOutputFromHistory<TRest, TFinalCtx, TName>
-    : never
-  : never
+    ? TRest extends readonly [infer TNext, ...infer _]
+      ? TNext extends { ctx: infer TNextCtx }
+        ? { [K in Extract<TStepName, string>]: TNextCtx } & StepAfterCtxMap<
+            Extract<TRest, readonly unknown[]>,
+            TFinalCtx
+          >
+        : { [K in Extract<TStepName, string>]: TFinalCtx } & StepAfterCtxMap<
+            Extract<TRest, readonly unknown[]>,
+            TFinalCtx
+          >
+      : { [K in Extract<TStepName, string>]: TFinalCtx } & StepAfterCtxMap<
+          Extract<TRest, readonly unknown[]>,
+          TFinalCtx
+        >
+    : StepAfterCtxMap<Extract<TRest, readonly unknown[]>, TFinalCtx>
+  : {}
+
+type LookupAfterCtx<M, K extends string, F> = K extends keyof M ? M[K] : F
 
 /**
  * Get the output context from a pipeline.
  *
  * Without a step name: returns the final context after all steps.
- * With a step name: returns the context after the step immediately following the named step
- * (or the final context if it's the last/penultimate step).
+ * With a step name: returns the context after the named step completes
+ * (or the final context if it's the last step).
  *
  * @example
  * const pipeline = stepkit<{ id: string }>()
@@ -84,14 +103,14 @@ type StepOutputFromHistory<TH, TFinalCtx, TName extends string> = TH extends rea
  * // { id: string; name: string; result: string }
  *
  * type AfterFetch = StepOutput<typeof pipeline, 'fetch-user'>
- * // { id: string; name: string; result: string } (includes next step's output)
+ * // { id: string; name: string } (context right before 'process')
  */
 export type StepOutput<TBuilder, TName extends StepNames<TBuilder> | never = never> = [
   TName
 ] extends [never]
   ? BuilderFinalContext<TBuilder>
-  : StepOutputFromHistory<
-      BuilderHistory<TBuilder>,
-      BuilderFinalContext<TBuilder>,
-      Extract<TName, string>
+  : LookupAfterCtx<
+      StepAfterCtxMap<BuilderHistory<TBuilder>, BuilderFinalContext<TBuilder>>,
+      Extract<TName, string>,
+      BuilderFinalContext<TBuilder>
     >

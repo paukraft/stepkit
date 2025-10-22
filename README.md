@@ -119,7 +119,7 @@ const handleQuestion = stepkit<Classified>()
 const handleStatement = stepkit<Classified>()
   .step('acknowledge', () => ({ response: 'Thanks for sharing!' }))
 
-// Compose with full type safety
+// Compose with full type safety (branch)
 const responder = classify
   .branchOn(
     {
@@ -133,6 +133,26 @@ const responder = classify
 
 await responder.run({ prompt: 'What is AI?' })
 ```
+
+### Nested Pipelines
+
+```typescript
+// Build a sub-pipeline
+const someOther = stepkit<{ passOn: boolean }>()
+  .step('sub', ({ passOn }) => ({ test: ['1', '2', '3'] }))
+
+// Use it as a step in another pipeline
+const main = stepkit()
+  .step('before', () => ({ passOn: true }))
+  .step('some-other', someOther)
+  .step('after', ({ passOn, test }) => ({ ok: passOn && test.length > 0 }))
+
+await main.run({})
+```
+
+Notes:
+- Nested pipelines merge outputs using the wrapping step's `mergePolicy` (default: `override`).
+- Nested step names are prefixed for typing, e.g. `some-other/sub` appears in `StepNames` and `StepOutput`.
 
 ## Features
 

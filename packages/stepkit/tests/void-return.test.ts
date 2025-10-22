@@ -6,7 +6,6 @@ describe('Void/undefined return handling', () => {
       .step('initialize', ({ count }) => ({ value: count }))
       .step('side-effect', ({ value }) => {
         // Just do something, don't return anything
-        console.log('Processing:', value)
       })
       .step('continue', ({ value }) => ({ result: value * 2 }))
 
@@ -20,7 +19,6 @@ describe('Void/undefined return handling', () => {
     const pipeline = stepkit<{ id: string }>()
       .step('fetch', ({ id }) => ({ data: `data-${id}` }))
       .step('log', ({ data }) => {
-        console.log('Logging:', data)
         return undefined
       })
       .step('process', ({ data }) => ({ processed: data.toUpperCase() }))
@@ -59,7 +57,6 @@ describe('Void/undefined return handling', () => {
       'mixed-parallel',
       ({ base }) => {
         // Side effect only
-        console.log('Side effect with base:', base)
       },
       ({ base }) => ({ doubled: base * 2 }),
       ({ base }) => {

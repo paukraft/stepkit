@@ -8,6 +8,16 @@ export type MergeOutputs<TOutputs extends readonly unknown[]> = UnionToIntersect
   TOutputs[number]
 >
 
+export type WithoutIndex<T> = {
+  [K in keyof T as string extends K
+    ? never
+    : number extends K
+      ? never
+      : symbol extends K
+        ? never
+        : K]: T[K]
+}
+
 // Step functions can return output or void (treated as {})
 export type StepFunction<TContext, TOutput extends Record<string, unknown>> = (
   context: TContext
@@ -66,24 +76,27 @@ export type MakeSafeOutput<TConfig, TOutput> = MakeConditionalOutputOptional<
   MakeErrorHandlingOutputOptional<TConfig, TOutput>
 >
 
+type HasKey<T, K extends PropertyKey> = K extends keyof T ? true : false
+
 // For transform(): when a condition is present, runtime either keeps previous context
 // (when skipped) or replaces it with new context (when executed). To reflect both
 // possibilities statically, expose both shapes as optional properties so downstream
 // steps can safely access either with undefined checks.
 // Also applies when onError allows failures or timeout is set.
-export type TransformResultContext<TPrev, TNew, TConfig> = TConfig extends {
-  condition: any
-}
-  ? Partial<TPrev> & Partial<TNew>
-  : TConfig extends { onError: infer H }
-    ? H extends 'continue' | 'skip-remaining'
-      ? Partial<TPrev> & Partial<TNew>
-      : TConfig extends { timeout: number }
+export type TransformResultContext<TPrev, TNew, TConfig> =
+  HasKey<TConfig, 'condition'> extends true
+    ? Partial<TPrev> & Partial<TNew>
+    : HasKey<TConfig, 'onError'> extends true
+      ? TConfig extends { onError: infer H }
+        ? H extends 'continue' | 'skip-remaining'
+          ? Partial<TPrev> & Partial<TNew>
+          : HasKey<TConfig, 'timeout'> extends true
+            ? Partial<TPrev> & Partial<TNew>
+            : TNew
+        : TNew
+      : HasKey<TConfig, 'timeout'> extends true
         ? Partial<TPrev> & Partial<TNew>
         : TNew
-    : TConfig extends { timeout: number }
-      ? Partial<TPrev> & Partial<TNew>
-      : TNew
 
 export type StepHistoryRecord<TName extends string, TCtx> = {
   name: TName
@@ -95,3 +108,28 @@ export type AppendHistory<
   TName extends string,
   TCtx
 > = [...THistory, StepHistoryRecord<TName, TCtx>]
+
+// Prefix each step name in a sub-history with a parent prefix
+export type PrefixHistory<
+  TH extends readonly StepHistoryRecord<string, unknown>[],
+  P extends string
+> = TH extends readonly [infer H, ...infer T]
+  ? H extends StepHistoryRecord<infer N, infer C>
+    ? [
+        StepHistoryRecord<`${P}/${Extract<N, string>}`, C>,
+        ...PrefixHistory<Extract<T, readonly StepHistoryRecord<string, unknown>[]>, P>
+      ]
+    : []
+  : []
+
+// Append multiple history records in order
+export type AppendMany<
+  TH extends readonly StepHistoryRecord<string, unknown>[],
+  TMore extends readonly StepHistoryRecord<string, unknown>[]
+> = [...TH, ...TMore]
+
+// Append a union of history tuples to an existing history producing a union of results
+export type AppendHistoryUnion<
+  TH extends readonly StepHistoryRecord<string, unknown>[],
+  U
+> = U extends readonly StepHistoryRecord<string, unknown>[] ? [...TH, ...U] : never

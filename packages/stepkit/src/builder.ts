@@ -7,16 +7,23 @@ import {
 } from './runtime'
 import {
   AppendHistory,
+  AppendHistoryUnion,
+  AppendMany,
   MakeSafeOutput,
   MergeOutputs,
+  PrefixHistory,
   StepConfig,
   StepFunction,
   TransformResultContext,
   UnionToIntersection
 } from './types'
-import { deepClone, isPlainObject, mergeWithPolicy } from './utils'
+import { computePatch, deepClone, isPlainObject, mergeContext } from './utils'
 
-type DiffNewKeys<TNew, TOld> = Omit<TNew, keyof TOld>
+type KnownKeys<T> = {
+  [K in keyof T]: string extends K ? never : number extends K ? never : symbol extends K ? never : K
+}[keyof T]
+
+type DiffNewKeys<TNew, TOld> = Omit<TNew, KnownKeys<TOld>>
 
 type StepExecutor<TCtx = unknown> = {
   name: string
@@ -47,17 +54,87 @@ type CaseReturnContext<TCtx, TCase> = TCase extends { then: (b: any) => infer R 
     : never
   : TCase extends { then: StepkitBuilder<TCtx, infer TSubCtx, any> }
     ? DiffNewKeys<TSubCtx, TCtx>
-    : TCase extends { default: (b: any) => infer R2 }
-      ? R2 extends StepkitBuilder<any, infer TSubCtx2, any>
-        ? DiffNewKeys<TSubCtx2, TCtx>
-        : never
-      : TCase extends { default: StepkitBuilder<TCtx, infer TSubCtx3, any> }
-        ? DiffNewKeys<TSubCtx3, TCtx>
-        : never
+    : TCase extends { then: StepkitBuilder<any, infer TSubCtx4, any> }
+      ? DiffNewKeys<TSubCtx4, TCtx>
+      : TCase extends { default: (b: any) => infer R2 }
+        ? R2 extends StepkitBuilder<any, infer TSubCtx2, any>
+          ? DiffNewKeys<TSubCtx2, TCtx>
+          : never
+        : TCase extends { default: StepkitBuilder<TCtx, infer TSubCtx3, any> }
+          ? DiffNewKeys<TSubCtx3, TCtx>
+          : TCase extends { default: StepkitBuilder<any, infer TSubCtx5, any> }
+            ? DiffNewKeys<TSubCtx5, TCtx>
+            : never
 
 type MergeBranchOutputs<TCtx, TCases extends readonly unknown[]> = Partial<
   UnionToIntersection<CaseReturnContext<TCtx, TCases[number]>>
 >
+
+type CaseSubHistory<TCtx, TCase> = TCase extends { then: (b: any) => infer R }
+  ? R extends StepkitBuilder<any, any, infer TH>
+    ? TH
+    : never
+  : TCase extends { then: StepkitBuilder<TCtx, any, infer TH> }
+    ? TH
+    : TCase extends { default: (b: any) => infer R2 }
+      ? R2 extends StepkitBuilder<any, any, infer TH2>
+        ? TH2
+        : never
+      : TCase extends { default: StepkitBuilder<TCtx, any, infer TH3> }
+        ? TH3
+        : never
+
+type CaseNameOf<TCase> = TCase extends { default: any }
+  ? TCase extends { name: infer N }
+    ? Extract<N, string>
+    : 'default-case'
+  : TCase extends { name: infer N }
+    ? Extract<N, string>
+    : 'branch-case'
+
+type CasePrefixedHistory<TCtx, TCase, TName extends string> = PrefixHistory<
+  CaseSubHistory<TCtx, TCase> extends readonly { name: string; ctx: unknown }[]
+    ? CaseSubHistory<TCtx, TCase>
+    : readonly [],
+  `${TName}/${CaseNameOf<TCase>}`
+>
+
+type MergeBranchHistory<
+  TCtx,
+  TCases extends readonly unknown[],
+  TName extends string
+> = TCases extends readonly [infer F, ...infer R]
+  ?
+      | CasePrefixedHistory<TCtx, F, TName>
+      | MergeBranchHistory<TCtx, Extract<R, readonly unknown[]>, TName>
+  : never
+
+// --- Variadic item support (mixing functions and sub-pipelines) ---
+type ItemOutput<TCtx, T> =
+  T extends StepFunction<TCtx, infer O>
+    ? O
+    : T extends StepkitBuilder<any, infer TSubOut, any>
+      ? DiffNewKeys<TSubOut, TCtx>
+      : never
+
+type ItemsOutputs<TCtx, TItems extends readonly unknown[]> = TItems extends readonly [
+  infer F,
+  ...infer R
+]
+  ? ItemOutput<TCtx, F> | ItemsOutputs<TCtx, Extract<R, readonly unknown[]>>
+  : never
+
+type ItemsPrefixedHistory<
+  TItems extends readonly unknown[],
+  TName extends string
+> = TItems extends readonly [infer F, ...infer R]
+  ? F extends StepkitBuilder<any, any, infer TH>
+    ? AppendMany<
+        PrefixHistory<TH, TName>,
+        ItemsPrefixedHistory<Extract<R, readonly unknown[]>, TName>
+      >
+    : ItemsPrefixedHistory<Extract<R, readonly unknown[]>, TName>
+  : readonly []
 
 export class StepkitBuilder<
   TInput,
@@ -72,6 +149,69 @@ export class StepkitBuilder<
   constructor(config: PipelineConfig = {}) {
     this.config = config
   }
+
+  // General: name omitted, any mix of fns and sub-pipelines
+  step<
+    TItems extends readonly (
+      | StepFunction<TContext, Record<string, unknown> | never>
+      | StepkitBuilder<any, any, any>
+    )[]
+  >(
+    ...items: TItems
+  ): StepkitBuilder<
+    TInput,
+    TContext & UnionToIntersection<ItemsOutputs<TContext, TItems>>,
+    AppendMany<AppendHistory<THistory, string, TContext>, ItemsPrefixedHistory<TItems, string>>
+  >
+
+  // General: named, any mix of fns and sub-pipelines
+  step<
+    TName extends string,
+    TItems extends readonly (
+      | StepFunction<TContext, Record<string, unknown> | never>
+      | StepkitBuilder<any, any, any>
+    )[]
+  >(
+    name: TName,
+    ...items: TItems
+  ): StepkitBuilder<
+    TInput,
+    TContext & UnionToIntersection<ItemsOutputs<TContext, TItems>>,
+    AppendMany<AppendHistory<THistory, TName, TContext>, ItemsPrefixedHistory<TItems, TName>>
+  >
+
+  // General: config with name, any mix of fns and sub-pipelines
+  step<
+    TItems extends readonly (
+      | StepFunction<TContext, Record<string, unknown> | never>
+      | StepkitBuilder<any, any, any>
+    )[],
+    TName extends string,
+    TConfig extends Omit<StepConfig<TContext>, 'name'> & { name: TName }
+  >(
+    config: TConfig,
+    ...items: TItems
+  ): StepkitBuilder<
+    TInput,
+    TContext & MakeSafeOutput<TConfig, UnionToIntersection<ItemsOutputs<TContext, TItems>>>,
+    AppendMany<AppendHistory<THistory, TName, TContext>, ItemsPrefixedHistory<TItems, TName>>
+  >
+
+  // General: config without name, any mix of fns and sub-pipelines
+  step<
+    TItems extends readonly (
+      | StepFunction<TContext, Record<string, unknown> | never>
+      | StepkitBuilder<any, any, any>
+    )[],
+    TConfig extends StepConfig<TContext>
+  >(
+    config: TConfig,
+    ...items: TItems
+  ): StepkitBuilder<
+    TInput,
+    TContext & MakeSafeOutput<TConfig, UnionToIntersection<ItemsOutputs<TContext, TItems>>>,
+    AppendMany<AppendHistory<THistory, string, TContext>, ItemsPrefixedHistory<TItems, string>>
+  >
 
   step<TOutputs extends readonly Record<string, unknown>[]>(
     ...fns: {
@@ -95,9 +235,27 @@ export class StepkitBuilder<
   >
 
   step<
+    TName extends string,
+    TSubIn extends Record<string, unknown>,
+    TSubOut,
+    TSubHistory extends readonly { name: string; ctx: unknown }[],
+    TOutputs extends readonly Record<string, unknown>[]
+  >(
+    name: TName,
+    sub: TContext extends TSubIn ? StepkitBuilder<TSubIn, TSubOut, TSubHistory> : never,
+    ...fns: {
+      [K in keyof TOutputs]: StepFunction<TContext, TOutputs[K]>
+    }
+  ): StepkitBuilder<
+    TInput,
+    TContext & DiffNewKeys<TSubOut, TContext> & MergeOutputs<TOutputs>,
+    AppendMany<AppendHistory<THistory, TName, TContext>, PrefixHistory<TSubHistory, TName>>
+  >
+
+  step<
     TOutputs extends readonly Record<string, unknown>[],
     TName extends string,
-    TConfig extends StepConfig<TContext> & { name: TName }
+    TConfig extends Omit<StepConfig<TContext>, 'name'> & { name: TName }
   >(
     config: TConfig,
     ...fns: {
@@ -107,6 +265,25 @@ export class StepkitBuilder<
     TInput,
     TContext & MakeSafeOutput<TConfig, MergeOutputs<TOutputs>>,
     AppendHistory<THistory, TName, TContext>
+  >
+
+  step<
+    TOutputs extends readonly Record<string, unknown>[],
+    TName extends string,
+    TConfig extends Omit<StepConfig<TContext>, 'name'> & { name: TName },
+    TSubIn extends Record<string, unknown>,
+    TSubOut,
+    TSubHistory extends readonly { name: string; ctx: unknown }[]
+  >(
+    config: TConfig,
+    sub: TContext extends TSubIn ? StepkitBuilder<TSubIn, TSubOut, TSubHistory> : never,
+    ...fns: {
+      [K in keyof TOutputs]: StepFunction<TContext, TOutputs[K]>
+    }
+  ): StepkitBuilder<
+    TInput,
+    TContext & MakeSafeOutput<TConfig, DiffNewKeys<TSubOut, TContext> & MergeOutputs<TOutputs>>,
+    AppendMany<AppendHistory<THistory, TName, TContext>, PrefixHistory<TSubHistory, TName>>
   >
 
   step<TOutputs extends readonly Record<string, unknown>[], TConfig extends StepConfig<TContext>>(
@@ -120,38 +297,101 @@ export class StepkitBuilder<
     AppendHistory<THistory, string, TContext>
   >
 
-  step<TOutputs extends readonly Record<string, unknown>[]>(
-    nameOrConfigOrFn: string | StepConfig<TContext> | StepFunction<TContext, TOutputs[0]>,
+  step<
+    TOutputs extends readonly Record<string, unknown>[],
+    TSubIn extends Record<string, unknown>,
+    TSubOut,
+    TSubHistory extends readonly { name: string; ctx: unknown }[]
+  >(
+    sub: TContext extends TSubIn ? StepkitBuilder<TSubIn, TSubOut, TSubHistory> : never,
     ...fns: {
       [K in keyof TOutputs]: StepFunction<TContext, TOutputs[K]>
     }
+  ): StepkitBuilder<
+    TInput,
+    TContext & DiffNewKeys<TSubOut, TContext> & MergeOutputs<TOutputs>,
+    AppendMany<AppendHistory<THistory, string, TContext>, PrefixHistory<TSubHistory, string>>
+  >
+
+  step<TOutputs extends readonly Record<string, unknown>[]>(
+    nameOrConfigOrFn:
+      | string
+      | StepConfig<TContext>
+      | StepFunction<TContext, TOutputs[0]>
+      | StepkitBuilder<any, any, any>,
+    ...fns: Array<StepFunction<TContext, Record<string, unknown>> | StepkitBuilder<any, any, any>>
   ): any {
     let stepName: string
     let stepConfig: StepConfig<TContext>
     let allFns: StepFunction<TContext, Record<string, unknown>>[]
+    const isBuilder = (x: unknown): x is StepkitBuilder<any, any, any> =>
+      x instanceof StepkitBuilder
+    const wrapBuilder = (
+      builder: StepkitBuilder<any, any, any>
+    ): StepFunction<TContext, Record<string, unknown>> => {
+      return async (context: TContext, runtime?: InternalRuntime) => {
+        if (runtime) {
+          const nestedRuntime: InternalRuntime = {
+            ...runtime,
+            namePrefix: [...runtime.namePrefix, stepName]
+          }
+          const subContext = await builder.runWithRuntime(context, nestedRuntime)
+          return computePatch(
+            context as unknown as Record<string, unknown>,
+            subContext as unknown as Record<string, unknown>
+          )
+        } else {
+          const subContext = await builder.run(context)
+          return computePatch(
+            context as unknown as Record<string, unknown>,
+            subContext as unknown as Record<string, unknown>
+          )
+        }
+      }
+    }
 
     if (typeof nameOrConfigOrFn === 'string') {
       stepName = nameOrConfigOrFn
       stepConfig = {}
-      allFns = fns as StepFunction<TContext, Record<string, unknown>>[]
+      const args = fns as unknown as unknown[]
+      allFns = args.map((a) =>
+        isBuilder(a) ? wrapBuilder(a) : (a as StepFunction<TContext, Record<string, unknown>>)
+      )
     } else if (typeof nameOrConfigOrFn === 'object') {
-      stepConfig = nameOrConfigOrFn
-      stepName = stepConfig.name ?? `step-${this.steps.length + 1}`
-      allFns = fns as StepFunction<TContext, Record<string, unknown>>[]
+      if (isBuilder(nameOrConfigOrFn)) {
+        stepConfig = {}
+        stepName = `step-${this.steps.length + 1}`
+        const args = [nameOrConfigOrFn, ...fns] as unknown[]
+        allFns = args.map((a) =>
+          isBuilder(a) ? wrapBuilder(a) : (a as StepFunction<TContext, Record<string, unknown>>)
+        )
+      } else {
+        stepConfig = nameOrConfigOrFn
+        stepName = stepConfig.name ?? `step-${this.steps.length + 1}`
+        const args = fns as unknown as unknown[]
+        allFns = args.map((a) =>
+          isBuilder(a) ? wrapBuilder(a) : (a as StepFunction<TContext, Record<string, unknown>>)
+        )
+      }
     } else {
       stepName = `step-${this.steps.length + 1}`
       stepConfig = {}
-      allFns = [nameOrConfigOrFn, ...fns] as unknown as StepFunction<
-        TContext,
-        Record<string, unknown>
-      >[]
+      const args = [nameOrConfigOrFn, ...fns] as unknown[]
+      allFns = args.map((a) =>
+        isBuilder(a) ? wrapBuilder(a) : (a as StepFunction<TContext, Record<string, unknown>>)
+      )
     }
 
     const stepExecutor = async (context: TContext, runtime?: InternalRuntime) => {
       const policy = stepConfig.mergePolicy ?? 'override'
       const parallelMode = stepConfig.parallelMode ?? 'all'
       if (parallelMode === 'settled') {
-        const results = await Promise.allSettled(allFns.map((fn) => Promise.resolve(fn(context))))
+        const results = await Promise.allSettled(
+          allFns.map((fn) => {
+            const call = (fn as any).length >= 2 ? (fn as any)(context, runtime) : fn(context)
+            return Promise.resolve(call)
+          })
+        )
         const merged: Record<string, unknown> = {}
         for (const r of results) {
           if (r.status === 'fulfilled') {
@@ -160,7 +400,7 @@ export class StepkitBuilder<
               throw new TypeError('Step function must return an object or void')
             const cloned = deepClone(value)
             const onCollision = (key: string) => runtime?.logFn?.(`⚠️ Key collision on '${key}'`)
-            const out = mergeWithPolicy(merged, cloned, policy, onCollision)
+            const out = mergeContext(merged, cloned, policy, onCollision)
             Object.assign(merged, out)
           } else {
             runtime?.errorLogFn?.('   Parallel function failed:', r.reason)
@@ -168,14 +408,19 @@ export class StepkitBuilder<
         }
         return merged
       } else {
-        const results = await Promise.all(allFns.map((fn) => Promise.resolve(fn(context))))
+        const results = await Promise.all(
+          allFns.map((fn) => {
+            const call = (fn as any).length >= 2 ? (fn as any)(context, runtime) : fn(context)
+            return Promise.resolve(call)
+          })
+        )
         return results.reduce<Record<string, unknown>>((acc, result) => {
           const value = result ?? {}
           if (!isPlainObject(value))
             throw new TypeError('Step function must return an object or void')
           const cloned = deepClone(value)
           const onCollision = (key: string) => runtime?.logFn?.(`⚠️ Key collision on '${key}'`)
-          return mergeWithPolicy(acc, cloned, policy, onCollision)
+          return mergeContext(acc, cloned, policy, onCollision)
         }, {})
       }
     }
@@ -209,7 +454,10 @@ export class StepkitBuilder<
   ): StepkitBuilder<
     TInput,
     TContext & MergeBranchOutputs<TContext, TCases>,
-    AppendHistory<THistory, string, TContext>
+    AppendHistoryUnion<
+      AppendHistory<THistory, string, TContext>,
+      MergeBranchHistory<TContext, TCases, string>
+    >
   >
 
   branchOn<
@@ -235,7 +483,10 @@ export class StepkitBuilder<
   ): StepkitBuilder<
     TInput,
     TContext & MergeBranchOutputs<TContext, TCases>,
-    AppendHistory<THistory, TName, TContext>
+    AppendHistoryUnion<
+      AppendHistory<THistory, TName, TContext>,
+      MergeBranchHistory<TContext, TCases, TName>
+    >
   >
 
   branchOn<
@@ -256,12 +507,15 @@ export class StepkitBuilder<
         }
     )[]
   >(
-    config: StepConfig<TContext> & { name: TName },
+    config: Omit<StepConfig<TContext>, 'name'> & { name: TName },
     ...cases: TCases
   ): StepkitBuilder<
     TInput,
     TContext & MergeBranchOutputs<TContext, TCases>,
-    AppendHistory<THistory, TName, TContext>
+    AppendHistoryUnion<
+      AppendHistory<THistory, TName, TContext>,
+      MergeBranchHistory<TContext, TCases, TName>
+    >
   >
 
   branchOn<
@@ -286,7 +540,10 @@ export class StepkitBuilder<
   ): StepkitBuilder<
     TInput,
     TContext & MergeBranchOutputs<TContext, TCases>,
-    AppendHistory<THistory, string, TContext>
+    AppendHistoryUnion<
+      AppendHistory<THistory, string, TContext>,
+      MergeBranchHistory<TContext, TCases, string>
+    >
   >
 
   branchOn(
@@ -438,18 +695,16 @@ export class StepkitBuilder<
           namePrefix: [...runtime.namePrefix, caseName]
         }
         const subContext = await built.runWithRuntime(context, nestedRuntime)
-        const output: Record<string, unknown> = {}
-        const existingKeys = new Set(Object.keys(context as Record<string, unknown>))
-        for (const [key, value] of Object.entries(subContext as Record<string, unknown>))
-          if (!existingKeys.has(key)) output[key] = value
-        return output
+        return computePatch(
+          context as unknown as Record<string, unknown>,
+          subContext as unknown as Record<string, unknown>
+        )
       } else {
         const subContext = await built.run(context)
-        const output: Record<string, unknown> = {}
-        const existingKeys = new Set(Object.keys(context as Record<string, unknown>))
-        for (const [key, value] of Object.entries(subContext as Record<string, unknown>))
-          if (!existingKeys.has(key)) output[key] = value
-        return output
+        return computePatch(
+          context as unknown as Record<string, unknown>,
+          subContext as unknown as Record<string, unknown>
+        )
       }
     }
 
@@ -476,16 +731,16 @@ export class StepkitBuilder<
     fn: (context: TContext) => TNewContext | Promise<TNewContext>
   ): StepkitBuilder<TInput, TNewContext, AppendHistory<THistory, TName, TContext>>
 
-  transform<
-    TNewContext extends Record<string, any>,
-    TName extends string,
-    TConfig extends StepConfig<TContext> & { name: TName }
-  >(
-    config: TConfig,
+  transform<TNewContext extends Record<string, any>, TName extends string>(
+    config: Omit<StepConfig<TContext>, 'name'> & { name: TName },
     fn: (context: TContext) => TNewContext | Promise<TNewContext>
   ): StepkitBuilder<
     TInput,
-    TransformResultContext<TContext, TNewContext, TConfig>,
+    TransformResultContext<
+      TContext,
+      TNewContext,
+      Omit<StepConfig<TContext>, 'name'> & { name: TName }
+    >,
     AppendHistory<THistory, TName, TContext>
   >
 
@@ -817,7 +1072,7 @@ export class StepkitBuilder<
           const policy = stepExecutor.config.mergePolicy ?? 'override'
           const cloned = deepClone(normalizedOutput as Record<string, unknown>)
           const onCollision = (key: string) => runtime.logFn(`⚠️ Key collision on '${key}'`)
-          context = mergeWithPolicy(context as Record<string, unknown>, cloned, policy, onCollision)
+          context = mergeContext(context as Record<string, unknown>, cloned, policy, onCollision)
           const duration = Date.now() - startTime
           if (stepLog) {
             if (runtime.showStepDuration)

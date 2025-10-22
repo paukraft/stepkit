@@ -83,18 +83,16 @@ describe('Type Safety and Inference', () => {
       .step('step-two', ({ output1 }) => ({ output2: output1 + '2' }))
       .step('step-three', ({ output2 }) => ({ output3: output2 + '3' }))
 
-    // Get context after step-one
+    // Get context after step-one (context right after 'step-one' completes)
     type AfterStepOne = StepOutput<typeof pipeline, 'step-one'>
 
-    // This should have input and output1 (the output from step-one)
+    // This should have input and output1 only (not output2)
     const afterOne: AfterStepOne = {
       input: 'test',
-      output1: 'test1',
-      output2: 'test12'
+      output1: 'test1'
     }
 
-    // The type includes output2 because it's the next step's output
-    expect(afterOne.output2).toBe('test12')
+    expect(afterOne.output1).toBe('test1')
   })
 
   it('should infer optional types for conditional steps', async () => {
