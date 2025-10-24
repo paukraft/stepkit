@@ -13,52 +13,6 @@ npm install stepkit
 
 Build small, named steps that pass a typed context forward. Each step returns a plain object merged into the context. Keep it obvious and composable.
 
-```typescript
-import { stepkit } from 'stepkit'
-import { openai } from '@ai-sdk/openai'
-import { generateText } from 'ai'
-
-const signup = stepkit<{ email: string }>()
-  .step('normalize-email', ({ email }) => ({ normalizedEmail: email.trim().toLowerCase() }))
-  .step('check-email-deliverability', async ({ normalizedEmail }) => ({
-    isDeliverable: await verifyEmail(normalizedEmail),
-  }))
-  .branchOn(
-    'delivery-route',
-    {
-      name: 'deliverable',
-      when: ({ isDeliverable }) => isDeliverable,
-      then: (b) =>
-        b
-          .step('draft-welcome', async ({ normalizedEmail }) => {
-            const { text } = await generateText({
-              model: openai('gpt-4.1'),
-              prompt: `Write a friendly one-line welcome for ${normalizedEmail}. Max 12 words.`,
-            })
-            return { welcomeSubject: 'Welcome to Acme', welcomeBody: text }
-          })
-          .step(
-            'send-welcome-email',
-            async ({ normalizedEmail, welcomeSubject, welcomeBody }) => {
-              const subject = welcomeSubject ?? 'Welcome!'
-              const body = welcomeBody ?? 'Welcome aboard!'
-              const id = await sendEmail({ to: normalizedEmail, subject, body })
-              return { welcomeEmailId: id }
-            },
-          ),
-    },
-    {
-      name: 'undeliverable',
-      default: (b) =>
-        b.step('request-verification', async ({ normalizedEmail }) => ({
-          verificationRequestId: await requestVerification(normalizedEmail),
-        })),
-    },
-  )
-
-await signup.run({ email: 'User@Example.com' })
-```
-
 ## Examples
 
 ### Parallel Execution + Conditional Steps
@@ -91,6 +45,105 @@ await evaluator.run({ idea: 'AI-powered plant waterer' })
 ```
 
 Tip: Use `{ parallelMode: 'settled' }` on a step to continue merging successful parallel outputs even if some functions fail.
+
+### Logging & Stopwatch
+
+Enable structured logs with per-step durations and a performance summary by passing `{ log: { stopwatch: true } }` at runtime.
+
+```typescript
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
+
+const pipeline = stepkit<{ userId: string }>()
+  .step('fetch-user', async ({ userId }) => {
+    await sleep(150)
+    return { user: { id: userId, email: 'user@example.com' } }
+  })
+  .step(
+    'fetch-data',
+    async ({ user }) => {
+      await sleep(120)
+      return { orders: [{ id: 'o1' }, { id: 'o2' }, { id: 'o3' }] }
+    },
+    async ({ user }) => {
+      await sleep(80)
+      return { alerts: ['notice'] }
+    }
+  )
+  .step({ name: 'maybe-slow', timeout: 200, onError: 'continue' }, async () => {
+    await sleep(300) // will time out and continue
+    return { slow: true }
+  })
+  .step('process', ({ orders }) => ({ orderCount: orders?.length ?? 0 }))
+  .branchOn(
+    'route',
+    {
+      name: 'has-orders',
+      when: ({ orderCount }) => (orderCount ?? 0) > 0,
+      then: (b) => b.step('compute-total', () => ({ total: 99.5 }))
+    },
+    { name: 'no-orders', default: (b) => b.step('show-empty', () => ({ total: 0 })) }
+  )
+  .transform('finalize', ({ user, total }) => ({ userId: user.id, total }))
+
+await pipeline.run({ userId: '42' }, { log: { stopwatch: true } })
+```
+
+Output:
+
+```text
+🚀 Starting pipeline with input: {
+  userId: "42",
+}
+
+📍 Step: fetch-user
+✅ fetch-user completed in 178ms
+   Output: user
+
+📍 Step: fetch-data
+✅ fetch-data completed in 121ms
+   Output: orders, alerts
+
+📍 Step: maybe-slow
+❌ maybe-slow failed after 201ms
+   Error: ... Step 'maybe-slow' timed out after 200ms
+
+📍 Step: process
+✅ process completed in 0ms
+   Output: orderCount
+
+🔀 Branch: route
+   ↳ Executing: has-orders
+
+📍 Step: has-orders/compute-total
+✅ has-orders/compute-total completed in 0ms
+   Output: total
+✅ route completed in 2ms
+   Output: total
+
+🔄 Transform: finalize
+✅ finalize completed in 0ms
+   Output: userId, total
+
+⏱️  Performance Summary:
+┌──────────────────────────────────────────────────────┐
+│ ✅ fetch-user                                  178ms │
+│ ✅ fetch-data                                  121ms │
+│ ❌ maybe-slow                                  201ms │
+│ ✅ process                                       0ms │
+│ ✅ has-orders/compute-total                      0ms │
+│ ✅ route                                         2ms │
+│ ✅ finalize                                      0ms │
+└──────────────────────────────────────────────────────┘
+
+📊 Statistics:
+   Average: 50ms
+   Slowest: fetch-user (178ms)
+   Fastest: process (0ms)
+
+⏰ Total Pipeline Time: 511ms
+
+✨ Pipeline completed successfully
+```
 
 ### Branching Logic
 
@@ -146,14 +199,32 @@ await moderator.run({ content: 'Check this out!' })
 
 ### Transform: Replace Context
 
-Replace the entire context when you want to normalize or finalize the shape.
+Clean the context: drop intermediate or sensitive fields and keep only what the next steps need.
 
 ```typescript
-const normalizer = stepkit<{ score: number }>()
-  .transform('normalize-score', ({ score }) => ({ score: Math.max(0, Math.min(1, score / 100)) }))
-  .step('use-score', ({ score }) => ({ isHigh: score >= 0.8 }))
+const cleaner = stepkit<{ token: string }>()
+  .step('fetch-user', async ({ token }) => ({
+    user: await getUser(token),
+    token, // still present for now
+    debugInfo: { fetchedAt: Date.now() },
+  }))
+  .step('fetch-settings', async ({ user }) => ({
+    rawSettings: await getSettings(user.id),
+    transient: 'will-be-removed',
+  }))
+  // Replace the entire context to remove clutter and sensitive data
+  .transform('clean-context', ({ user, rawSettings }) => ({
+    userId: user.id,
+    email: user.email,
+    theme: rawSettings.theme ?? 'system',
+    isPro: rawSettings.plan === 'pro',
+  }))
+  .step('use-clean', ({ userId, theme, isPro }) => ({
+    profileReady: true,
+    message: `${isPro ? 'Pro' : 'Free'} user ${userId} prefers ${theme} theme`,
+  }))
 
-await normalizer.run({ score: 87 })
+await cleaner.run({ token: 'secret' })
 ```
 
 ### Composable Pipelines
@@ -272,23 +343,6 @@ const guarded = stepkit()
 
 // ac.abort() would cancel; pass the signal at run time
 await guarded.run({}, { signal: ac.signal })
-```
-
-### Logging & Stopwatch
-
-Enable logging with per-step durations and a summary.
-
-```typescript
-const observed = stepkit({
-  log: {
-    logFn: (...args) => console.log(...args),
-    stopwatch: { showStepDuration: true, showSummary: true, showTotal: true },
-  },
-})
-  .step('fetch-user', async () => ({ user: await fetchUser('42') }))
-  .step('fetch-orders', async ({ user }) => ({ orders: await fetchOrders(user.id) }))
-
-await observed.run({})
 ```
 
 ### Type Helpers
