@@ -1,11 +1,11 @@
 {
   "name": "stepkit",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "description": "Type-safe pipeline builder for Node.js/TypeScript with powerful step composition",
   "type": "module",
   "main": "dist/index.cjs",
-  "module": "dist/index.js",
-  "types": "dist/index.d.ts",
+  "module": "dist/src/index.js",
+  "types": "dist/src/index.d.ts",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -25,14 +25,9 @@
   ],
   "exports": {
     ".": {
-      "import": {
-        "types": "./dist/index.d.ts",
-        "default": "./dist/index.js"
-      },
-      "require": {
-        "types": "./dist/index.d.cts",
-        "default": "./dist/index.cjs"
-      }
+      "types": "./dist/src/index.d.ts",
+      "import": "./dist/src/index.js",
+      "require": "./dist/index.cjs"
     }
   },
   "files": [
@@ -45,7 +40,7 @@
   },
   "sideEffects": false,
   "scripts": {
-    "build": "tsdown",
+    "build": "tsc -p tsconfig.build.json",
     "dev": "tsdown --watch",
     "test": "jest",
     "test:watch": "jest --watch",
