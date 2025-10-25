@@ -42,14 +42,10 @@ describe('Checkpoints and Resume', () => {
     )
 
     // With string checkpoint + explicit stepName, overrideData is typed to that step's output
-    await pipeline.runCheckpoint({
-      checkpoint: cp,
-      overrideData: { b: 5 }
-    })
+    await pipeline.runCheckpoint({ checkpoint: cp, overrideData: { b: 5 } })
 
     const resumed = await pipeline.runCheckpoint({
       checkpoint: cp,
-      stepName: 'two',
       overrideData: { b: 5 }
     })
     expect(resumed).toHaveProperty('sum', (2 + 1) * 2 + 5)

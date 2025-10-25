@@ -37,7 +37,9 @@ export type InternalRuntime = {
   showTotal: boolean
   stepTimings: StepTimingInfo[]
   pipelineStartTime: number
-  onStepComplete?: (event: StepCompleteEvent<Record<string, unknown>, string>) => void
+  onStepComplete?: (
+    event: StepCompleteEvent<Record<string, unknown>, string>
+  ) => void | Promise<void>
   onError?: (stepName: string, error: Error) => void
   namePrefix: string[]
   signal?: AbortSignal
@@ -66,7 +68,7 @@ export type PipelineConfig<
   TStepName extends string = string
 > = {
   log?: boolean | LogConfig
-  onStepComplete?: (event: StepCompleteEvent<TCtx, TStepName>) => void
+  onStepComplete?: (event: StepCompleteEvent<TCtx, TStepName>) => void | Promise<void>
   onError?: (stepName: string, error: Error) => void
   signal?: AbortSignal
 }

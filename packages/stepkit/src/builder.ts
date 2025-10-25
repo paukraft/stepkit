@@ -1,4 +1,4 @@
-import type { StepNames as BuilderStepNames, StepOutput as BuilderStepOutput } from './index'
+import type { StepNames as BuilderStepNames } from './index'
 import {
   formatDuration,
   getDisplayName,
@@ -863,15 +863,17 @@ export class StepkitBuilder<
       showTotal,
       stepTimings,
       pipelineStartTime,
-      onStepComplete: (event) => {
-        // Bubble event to both config and run options
-        ;(
-          this.config as PipelineConfig<
-            TContext,
-            BuilderStepNames<StepkitBuilder<TInput, TContext, THistory>>
-          >
-        ).onStepComplete?.(event as any)
-        options?.onStepComplete?.(event as any)
+      onStepComplete: async (event) => {
+        // Bubble event to both config and run options, awaiting async handlers
+        await Promise.resolve(
+          (
+            this.config as PipelineConfig<
+              TContext,
+              BuilderStepNames<StepkitBuilder<TInput, TContext, THistory>>
+            >
+          ).onStepComplete?.(event as any)
+        )
+        await Promise.resolve(options?.onStepComplete?.(event as any))
       },
       onError,
       namePrefix: [],
@@ -1124,7 +1126,7 @@ export class StepkitBuilder<
           if (runtime.stopwatchEnabled)
             runtime.stepTimings.push({ name: displayName, duration, status: 'success' })
           const checkpoint = JSON.stringify({ stepName: displayName, output: deepClone(context) })
-          runtime.onStepComplete?.({
+          await runtime.onStepComplete?.({
             stepName: displayName,
             duration,
             context: deepClone(context),
@@ -1164,7 +1166,7 @@ export class StepkitBuilder<
           if (runtime.stopwatchEnabled)
             runtime.stepTimings.push({ name: displayName, duration, status: 'success' })
           const checkpoint = JSON.stringify({ stepName: displayName, output: deepClone(context) })
-          runtime.onStepComplete?.({
+          await runtime.onStepComplete?.({
             stepName: displayName,
             duration,
             context: deepClone(context),
@@ -1219,7 +1221,7 @@ export class StepkitBuilder<
     return context
   }
 
-  // Overloads for strict typing
+  // Simplified overloads: only string or { checkpoint, overrideData? }
   runCheckpoint(
     checkpoint: string,
     options?: PipelineConfig<TContext, BuilderStepNames<StepkitBuilder<TInput, TContext, THistory>>>
@@ -1228,47 +1230,14 @@ export class StepkitBuilder<
     params: { checkpoint: string; overrideData?: Partial<TContext> },
     options?: PipelineConfig<TContext, BuilderStepNames<StepkitBuilder<TInput, TContext, THistory>>>
   ): Promise<TContext>
-  runCheckpoint<TStepName extends BuilderStepNames<StepkitBuilder<TInput, TContext, THistory>>>(
-    params: {
-      checkpoint: {
-        stepName: TStepName
-        output: BuilderStepOutput<StepkitBuilder<TInput, TContext, THistory>, TStepName>
-      }
-      overrideData?: Partial<
-        BuilderStepOutput<StepkitBuilder<TInput, TContext, THistory>, TStepName>
-      >
-    },
-    options?: PipelineConfig<TContext, BuilderStepNames<StepkitBuilder<TInput, TContext, THistory>>>
-  ): Promise<TContext>
-  runCheckpoint<TStepName extends BuilderStepNames<StepkitBuilder<TInput, TContext, THistory>>>(
-    params: {
-      checkpoint: string
-      stepName: TStepName
-      overrideData?: Partial<
-        BuilderStepOutput<StepkitBuilder<TInput, TContext, THistory>, TStepName>
-      >
-    },
-    options?: PipelineConfig<TContext, BuilderStepNames<StepkitBuilder<TInput, TContext, THistory>>>
-  ): Promise<TContext>
   async runCheckpoint(
-    arg:
-      | string
-      | { checkpoint: string; overrideData?: Partial<TContext> }
-      | {
-          checkpoint: { stepName: string; output: Record<string, unknown> }
-          overrideData?: Record<string, unknown>
-        }
-      | { checkpoint: string; stepName: string; overrideData?: Record<string, unknown> },
+    arg: string | { checkpoint: string; overrideData?: Partial<TContext> },
     options?: PipelineConfig<TContext, BuilderStepNames<StepkitBuilder<TInput, TContext, THistory>>>
   ): Promise<TContext> {
     const parsedAny: any = typeof arg === 'string' ? { checkpoint: arg } : arg
-    const cp: { stepName: string; output: Record<string, unknown> } =
-      typeof parsedAny.checkpoint === 'string'
-        ? (JSON.parse(parsedAny.checkpoint) as {
-            stepName: string
-            output: Record<string, unknown>
-          })
-        : (parsedAny.checkpoint as { stepName: string; output: Record<string, unknown> })
+    const cp: { stepName: string; output: Record<string, unknown> } = JSON.parse(
+      parsedAny.checkpoint
+    ) as { stepName: string; output: Record<string, unknown> }
 
     const base = deepClone(cp.output)
     const override = (parsedAny.overrideData ?? undefined) as Record<string, unknown> | undefined
@@ -1321,14 +1290,16 @@ export class StepkitBuilder<
       showTotal,
       stepTimings,
       pipelineStartTime,
-      onStepComplete: (event) => {
-        ;(
-          this.config as PipelineConfig<
-            TContext,
-            BuilderStepNames<StepkitBuilder<TInput, TContext, THistory>>
-          >
-        ).onStepComplete?.(event as any)
-        options?.onStepComplete?.(event as any)
+      onStepComplete: async (event) => {
+        await Promise.resolve(
+          (
+            this.config as PipelineConfig<
+              TContext,
+              BuilderStepNames<StepkitBuilder<TInput, TContext, THistory>>
+            >
+          ).onStepComplete?.(event as any)
+        )
+        await Promise.resolve(options?.onStepComplete?.(event as any))
       },
       onError,
       namePrefix: [],

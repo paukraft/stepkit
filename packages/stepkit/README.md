@@ -393,18 +393,18 @@ await guarded.run({}, { signal: ac.signal })
 
 ### Checkpoints & Resume
 
-Resume a pipeline from any completed step using checkpoints emitted by the `onStepComplete` event. You can also override data shallowly at resume time.
+Resume a pipeline from any completed step using checkpoints emitted by `onStepComplete`. You can shallowly override fields when resuming.
 
 ```typescript
-import { stepkit, serializeCheckpoint } from 'stepkit'
+import { stepkit } from 'stepkit'
 
-const pipeline = stepkit<{ a: number; b?: number }>()
+const calc = stepkit<{ a: number; b?: number }>()
   .step('add-one', ({ a }) => ({ a: a + 1 }))
   .step('double', ({ a }) => ({ a: a * 2 }))
   .step('finish', ({ a, b }) => ({ sum: (a ?? 0) + (b ?? 0) }))
 
 let checkpoint = ''
-await pipeline.run(
+await calc.run(
   { a: 1 },
   {
     onStepComplete: (e) => {
@@ -413,86 +413,58 @@ await pipeline.run(
   },
 )
 
-// Later, resume from the checkpoint, optionally overriding fields
-const resumed = await pipeline.runCheckpoint({ checkpoint, overrideData: { b: 10 } })
+// Resume later with an override
+const resumed = await calc.runCheckpoint({ checkpoint, overrideData: { b: 10 } })
 ```
 
-You can also pass a parsed checkpoint object and get strict typing for `overrideData`:
+#### Human approval (mock flow)
+
+Use a checkpoint to pause after generating a draft, store the checkpoint, and resume on approval.
 
 ```typescript
-const parsed = { stepName: 'double' as const, output: { a: 4 } }
-await pipeline.runCheckpoint({ checkpoint: parsed, overrideData: { b: 5 } })
-```
-
-Utilities:
-
-```typescript
-import { serializeCheckpoint, deserializeCheckpoint } from 'stepkit'
-
-const s = serializeCheckpoint({ stepName: 'double', output: { a: 4 } })
-const cp = deserializeCheckpoint<typeof parsed.output>(s)
-```
-
-#### Human-in-the-loop (concept)
-
-Minimal pattern using a shared pipeline and two tiny API routes (start + approve):
-
-```typescript
-// lib/pipeline.ts
 import { stepkit } from 'stepkit'
 
-// Domain fns (replace with real services)
-const loadPost = async (id: string) => ({ id, title: 'Hello' })
-const scoreRisk = ({ title }: { title: string }) => (title.trim() ? 'low' : 'high')
-const publishPost = async (_: { id: string; title: string }) => 'pub_123'
+// Mocks — replace with real services
+const kv: Record<string, string> = {}
+const save = async (id: string, cp: string) => (kv[id] = cp)
+const get = async (id: string) => kv[id] ?? null
+const del = async (id: string) => { delete kv[id] }
+const sendEmail = async ({ to, body }: { to: string; body: string }) => {
+  console.log('Sending email to', to, 'with body:', body)
+}
 
-export const pipeline = stepkit<{ postId: string }>()
-  .step('load', async ({ postId }) => ({ post: await loadPost(postId) }))
-  .step('moderate', ({ post }) => ({ risk: scoreRisk(post) }))
-  .step('publish', async ({ post }) => ({ publishedId: await publishPost(post) }))
-```
+const replyFlow = stepkit<{ body: string }>()
+  .step('generate', async ({ body }) => ({ reply: `Reply: ${body}` }))
+  .step('send', async ({ reply }) => {
+    await sendEmail({ to: 'user@example.com', body: reply })
+  })
 
-```typescript
-// app/api/posts/[postId]/run/route.ts
-import { pipeline } from '@/lib/pipeline'
-// Substitute with your storage (e.g. @vercel/kv, db, etc.)
-const kv = { set: async (_: string, __: string) => {} }
-
-export const runtime = 'edge'
-
-export async function POST(_: Request, ctx: { params: { postId: string } }) {
+export const start = async (body: string) => {
   let approvalId: string | null = null
-
-  await pipeline.run(
-    { postId: ctx.params.postId },
+  await replyFlow.run(
+    { body },
     {
-      onStepComplete: async (e) => {
-        if (e.stepName === 'moderate') {
+      async onStepComplete(e) {
+        if (e.stepName.endsWith('generate')) {
           approvalId = `apr_${Date.now()}`
-          await kv.set(approvalId, e.checkpoint)
+          await save(approvalId, e.checkpoint)
           e.stopPipeline()
         }
       },
     },
   )
-
-  return Response.json({ approvalId })
+  return { approvalId }
 }
-```
 
-```typescript
-// app/api/approvals/[approvalId]/approve/route.ts
-import { pipeline } from '@/lib/pipeline'
-const kv = { get: async (_: string) => '' as string | null }
+export const approve = async (approvalId: string) => {
+  const checkpoint = await get(approvalId)
+  if (!checkpoint) throw new Error('Not found')
+  await replyFlow.runCheckpoint(checkpoint)
+  await del(approvalId)
+}
 
-export const runtime = 'edge'
-
-export async function POST(_: Request, ctx: { params: { approvalId: string } }) {
-  const checkpoint = await kv.get(ctx.params.approvalId)
-  if (!checkpoint) return new Response('Not found', { status: 404 })
-
-  const out = await pipeline.runCheckpoint(checkpoint)
-  return Response.json({ ok: true, out })
+export const reject = async (approvalId: string) => {
+  await del(approvalId)
 }
 ```
 

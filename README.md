@@ -347,18 +347,18 @@ await guarded.run({}, { signal: ac.signal })
 
 ### Checkpoints & Resume
 
-Resume a pipeline from any completed step using checkpoints emitted by `onStepComplete`. You may override fields shallowly when resuming.
+Resume from any completed step via checkpoints emitted by `onStepComplete`. You can shallowly override fields on resume.
 
 ```typescript
-import { stepkit, serializeCheckpoint } from 'stepkit'
+import { stepkit } from 'stepkit'
 
-const pipeline = stepkit<{ a: number; b?: number }>()
+const calc = stepkit<{ a: number; b?: number }>()
   .step('add-one', ({ a }) => ({ a: a + 1 }))
   .step('double', ({ a }) => ({ a: a * 2 }))
   .step('finish', ({ a, b }) => ({ sum: (a ?? 0) + (b ?? 0) }))
 
 let checkpoint = ''
-await pipeline.run(
+await calc.run(
   { a: 1 },
   {
     onStepComplete: (e) => {
@@ -368,73 +368,57 @@ await pipeline.run(
 )
 
 // Resume later with an override
-const resumed = await pipeline.runCheckpoint({ checkpoint, overrideData: { b: 10 } })
+const resumed = await calc.runCheckpoint({ checkpoint, overrideData: { b: 10 } })
 ```
 
-Utilities:
+#### Human approval (mock flow)
+
+Pause after generating a draft, store the checkpoint, and resume on approval.
 
 ```typescript
-import { serializeCheckpoint, deserializeCheckpoint } from 'stepkit'
-
-const s = serializeCheckpoint({ stepName: 'double', output: { a: 4 } })
-const cp = deserializeCheckpoint<typeof parsed.output>(s)
-```
-
-#### Human-in-the-loop (concept)
-
-Concise Next.js-style start and approve routes with a shared pipeline:
-
-```typescript
-// lib/flow.ts
 import { stepkit } from 'stepkit'
 
-const loadItem = async (id: string) => ({ id, content: 'hi' })
-const needsReview = ({ content }: { content: string }) => content.length > 0
-const finalize = async (_: { id: string }) => 'ok'
+// Mocks
+const kv: Record<string, string> = {}
+const save = async (id: string, cp: string) => (kv[id] = cp)
+const get = async (id: string) => kv[id] ?? null
+const del = async (id: string) => { delete kv[id] }
+const sendEmail = async ({ to, body }: { to: string; body: string }) => {
+  console.log('Sending email to', to, 'with body:', body)
+}
 
-export const flow = stepkit<{ id: string }>()
-  .step('load', async ({ id }) => ({ item: await loadItem(id) }))
-  .step('review', ({ item }) => ({ requiresApproval: needsReview(item) }))
-  .step('finish', async ({ item }) => ({ result: await finalize(item) }))
-```
+const replyFlow = stepkit<{ body: string }>()
+  .step('generate', async ({ body }) => ({ reply: `Reply: ${body}` }))
+  .step('send', async ({ reply }) => {
+    await sendEmail({ to: 'user@example.com', body: reply })
+  })
 
-```typescript
-// app/api/items/[id]/run/route.ts
-import { flow } from '@/lib/flow'
-const kv = { set: async (_: string, __: string) => {} }
-
-export const runtime = 'edge'
-
-export async function POST(_: Request, ctx: { params: { id: string } }) {
+export const start = async (body: string) => {
   let approvalId: string | null = null
-  await flow.run(
-    { id: ctx.params.id },
+  await replyFlow.run(
+    { body },
     {
-      onStepComplete: async (e) => {
-        if (e.stepName === 'review') {
+      async onStepComplete(e) {
+        if (e.stepName.endsWith('generate')) {
           approvalId = `apr_${Date.now()}`
-          await kv.set(approvalId, e.checkpoint)
+          await save(approvalId, e.checkpoint)
           e.stopPipeline()
         }
       },
     },
   )
-  return Response.json({ approvalId })
+  return { approvalId }
 }
-```
 
-```typescript
-// app/api/approvals/[approvalId]/approve/route.ts
-import { flow } from '@/lib/flow'
-const kv = { get: async (_: string) => '' as string | null }
+export const approve = async (approvalId: string) => {
+  const checkpoint = await get(approvalId)
+  if (!checkpoint) throw new Error('Not found')
+  await replyFlow.runCheckpoint(checkpoint)
+  await del(approvalId)
+}
 
-export const runtime = 'edge'
-
-export async function POST(_: Request, ctx: { params: { approvalId: string } }) {
-  const checkpoint = await kv.get(ctx.params.approvalId)
-  if (!checkpoint) return new Response('Not found', { status: 404 })
-  const out = await flow.runCheckpoint(checkpoint)
-  return Response.json({ ok: true, out })
+export const reject = async (approvalId: string) => {
+  await del(approvalId)
 }
 ```
 
