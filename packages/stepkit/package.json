@@ -1,6 +1,6 @@
 {
   "name": "stepkit",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Type-safe pipeline builder for Node.js/TypeScript with powerful step composition",
   "type": "module",
   "main": "dist/index.cjs",

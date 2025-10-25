@@ -887,6 +887,7 @@ export class StepkitBuilder<
       const totalDuration = Date.now() - pipelineStartTime
       if (showSummary && stepTimings.length > 0) {
         logFn('\n⏱️  Performance Summary:')
+        if (runtime.resumeFrom) logFn(`↪️ Resumed from checkpoint: ${runtime.resumeFrom}`)
         const boxWidth = 54
         const border = '─'.repeat(boxWidth)
         logFn(`┌${border}┐`)
@@ -915,11 +916,20 @@ export class StepkitBuilder<
           logFn(`   Slowest: ${slowestStep.name} (${formatDuration(slowestStep.duration)})`)
           logFn(`   Fastest: ${fastestStep.name} (${formatDuration(fastestStep.duration)})`)
         }
+        if (runtime.stopController.requested) {
+          const by = runtime.stopController.requestedBy
+            ? ` (requested by ${runtime.stopController.requestedBy})`
+            : ''
+          logFn(`\n⏹️  Stopped early${by}`)
+        }
       }
       if (showTotal) logFn(`\n⏰ Total Pipeline Time: ${formatDuration(totalDuration)}`)
     }
 
-    if (globalLog) logFn('\n✨ Pipeline completed successfully')
+    if (globalLog)
+      logFn(
+        `\n${runtime.stopController.requested ? '✨ Pipeline stopped early' : '✨ Pipeline completed successfully'}`
+      )
     return result
   }
 
@@ -1120,10 +1130,19 @@ export class StepkitBuilder<
             context: deepClone(context),
             checkpoint,
             stopPipeline: () => {
-              if (runtime.stopController) runtime.stopController.requested = true
+              if (runtime.stopController) {
+                runtime.stopController.requested = true
+                runtime.stopController.requestedBy = displayName
+              }
             }
           })
-          if (runtime.stopController?.requested) break
+          if (runtime.stopController?.requested) {
+            if (stepLog)
+              runtime.logFn(
+                `\n⏹️ Early stop requested by: ${runtime.stopController.requestedBy ?? displayName}`
+              )
+            break
+          }
         } else {
           // Steps can return void (treated as {})
           const normalizedOutput = stepOutput ?? {}
@@ -1151,10 +1170,19 @@ export class StepkitBuilder<
             context: deepClone(context),
             checkpoint,
             stopPipeline: () => {
-              if (runtime.stopController) runtime.stopController.requested = true
+              if (runtime.stopController) {
+                runtime.stopController.requested = true
+                runtime.stopController.requestedBy = displayName
+              }
             }
           })
-          if (runtime.stopController?.requested) break
+          if (runtime.stopController?.requested) {
+            if (stepLog)
+              runtime.logFn(
+                `\n⏹️ Early stop requested by: ${runtime.stopController.requestedBy ?? displayName}`
+              )
+            break
+          }
         }
       } catch (error) {
         // Circuit breaker state management (on failure)
@@ -1222,7 +1250,7 @@ export class StepkitBuilder<
     },
     options?: PipelineConfig<TContext, BuilderStepNames<StepkitBuilder<TInput, TContext, THistory>>>
   ): Promise<TContext>
-  runCheckpoint(
+  async runCheckpoint(
     arg:
       | string
       | { checkpoint: string; overrideData?: Partial<TContext> }
@@ -1306,11 +1334,61 @@ export class StepkitBuilder<
       namePrefix: [],
       signal: options?.signal ?? this.config.signal,
       stopController: { requested: false },
-      resumeController: { target: cp.stepName }
+      resumeController: { target: cp.stepName },
+      resumeFrom: cp.stepName
     }
 
     if (globalLog) logFn('🚀 Resuming pipeline from checkpoint step:', cp.stepName)
-    return this.runWithRuntime(startContext as TInput, runtime)
+    const result = await this.runWithRuntime(startContext as TInput, runtime)
+
+    if (stopwatchEnabled && globalLog) {
+      const totalDuration = Date.now() - pipelineStartTime
+      if (showSummary && stepTimings.length > 0) {
+        logFn('\n⏱️  Performance Summary:')
+        if (runtime.resumeFrom) logFn(`↪️ Resumed from checkpoint: ${runtime.resumeFrom}`)
+        const boxWidth = 54
+        const border = '─'.repeat(boxWidth)
+        logFn(`┌${border}┐`)
+        stepTimings.forEach((timing) => {
+          const statusIcon =
+            timing.status === 'success' ? '✅' : timing.status === 'failed' ? '❌' : '⏭️'
+          const durationStr =
+            timing.status === 'skipped' ? 'skipped' : formatDuration(timing.duration)
+          const availableForName = boxWidth - 5 - durationStr.length
+          const name = timing.name.padEnd(availableForName)
+          logFn(`│ ${statusIcon} ${name}${durationStr} │`)
+        })
+        logFn(`└${border}┘`)
+        const successfulSteps = stepTimings.filter((t) => t.status === 'success')
+        if (successfulSteps.length > 0) {
+          const totalStepTime = successfulSteps.reduce((acc, t) => acc + t.duration, 0)
+          const avgDuration = Math.round(totalStepTime / successfulSteps.length)
+          const slowestStep = successfulSteps.reduce((max, step) =>
+            step.duration > max.duration ? step : max
+          )
+          const fastestStep = successfulSteps.reduce((min, step) =>
+            step.duration < min.duration ? step : min
+          )
+          logFn(`\n📊 Statistics:`)
+          logFn(`   Average: ${formatDuration(avgDuration)}`)
+          logFn(`   Slowest: ${slowestStep.name} (${formatDuration(slowestStep.duration)})`)
+          logFn(`   Fastest: ${fastestStep.name} (${formatDuration(fastestStep.duration)})`)
+        }
+        if (runtime.stopController.requested) {
+          const by = runtime.stopController.requestedBy
+            ? ` (requested by ${runtime.stopController.requestedBy})`
+            : ''
+          logFn(`\n⏹️  Stopped early${by}`)
+        }
+      }
+      if (showTotal) logFn(`\n⏰ Total Pipeline Time: ${formatDuration(totalDuration)}`)
+    }
+
+    if (globalLog)
+      logFn(
+        `\n${runtime.stopController.requested ? '✨ Pipeline stopped early' : '✨ Pipeline completed successfully'}`
+      )
+    return result
   }
 
   describe(): string[] {

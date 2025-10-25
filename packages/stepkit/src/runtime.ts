@@ -41,8 +41,9 @@ export type InternalRuntime = {
   onError?: (stepName: string, error: Error) => void
   namePrefix: string[]
   signal?: AbortSignal
-  stopController: { requested: boolean }
+  stopController: { requested: boolean; requestedBy?: string }
   resumeController: { target: string | null }
+  resumeFrom?: string
 }
 
 export const formatDuration = (durationMs: number): string => {
