@@ -27,9 +27,9 @@ describe('Logging', () => {
 
     expect(logFn).toHaveBeenCalled()
     // Check that starting pipeline message was logged
-    expect(
-      logFn.mock.calls.some((call) => String(call[0]).includes('Starting pipeline'))
-    ).toBe(true)
+    expect(logFn.mock.calls.some((call) => String(call[0]).includes('Starting pipeline'))).toBe(
+      true
+    )
   })
 
   it('should respect per-step log override', async () => {
@@ -56,11 +56,11 @@ describe('Logging', () => {
   })
 
   it('should call onStepComplete callback', async () => {
-    const completions: Array<{ name: string; duration: number }> = []
+    const completions: Array<{ stepName: string; duration: number }> = []
 
     await stepkit<{ input: string }>({
-      onStepComplete: (stepName, _output, duration) => {
-        completions.push({ name: stepName, duration })
+      onStepComplete: (e) => {
+        completions.push({ stepName: e.stepName, duration: e.duration })
       }
     })
       .step('step-1', ({ input }) => ({ output1: input + '1' }))
@@ -68,8 +68,8 @@ describe('Logging', () => {
       .run({ input: 'test' })
 
     expect(completions).toHaveLength(2)
-    expect(completions[0].name).toBe('step-1')
-    expect(completions[1].name).toBe('step-2')
+    expect(completions[0].stepName).toBe('step-1')
+    expect(completions[1].stepName).toBe('step-2')
     expect(completions[0].duration).toBeGreaterThanOrEqual(0)
   })
 
@@ -81,8 +81,8 @@ describe('Logging', () => {
       .run(
         { input: 'test' },
         {
-          onStepComplete: (stepName) => {
-            completions.push(stepName)
+          onStepComplete: (e) => {
+            completions.push(e.stepName)
           }
         }
       )
@@ -95,16 +95,16 @@ describe('Logging', () => {
     const runCompletions: string[] = []
 
     await stepkit<{ input: string }>({
-      onStepComplete: (stepName) => {
-        configCompletions.push(stepName)
+      onStepComplete: (e) => {
+        configCompletions.push(e.stepName)
       }
     })
       .step('step-1', ({ input }) => ({ output: input + '1' }))
       .run(
         { input: 'test' },
         {
-          onStepComplete: (stepName) => {
-            runCompletions.push(stepName)
+          onStepComplete: (e) => {
+            runCompletions.push(e.stepName)
           }
         }
       )
@@ -113,4 +113,3 @@ describe('Logging', () => {
     expect(runCompletions).toContain('step-1')
   })
 })
-

@@ -391,6 +391,131 @@ const guarded = stepkit()
 await guarded.run({}, { signal: ac.signal })
 ```
 
+### Checkpoints & Resume
+
+Resume a pipeline from any completed step using checkpoints emitted by the `onStepComplete` event. You can also override data shallowly at resume time.
+
+```typescript
+import { stepkit, serializeCheckpoint } from 'stepkit'
+
+const pipeline = stepkit<{ a: number; b?: number }>()
+  .step('add-one', ({ a }) => ({ a: a + 1 }))
+  .step('double', ({ a }) => ({ a: a * 2 }))
+  .step('finish', ({ a, b }) => ({ sum: (a ?? 0) + (b ?? 0) }))
+
+let checkpoint = ''
+await pipeline.run(
+  { a: 1 },
+  {
+    onStepComplete: (e) => {
+      if (e.stepName === 'double') checkpoint = e.checkpoint
+    },
+  },
+)
+
+// Later, resume from the checkpoint, optionally overriding fields
+const resumed = await pipeline.runCheckpoint({ checkpoint, overrideData: { b: 10 } })
+```
+
+You can also pass a parsed checkpoint object and get strict typing for `overrideData`:
+
+```typescript
+const parsed = { stepName: 'double' as const, output: { a: 4 } }
+await pipeline.runCheckpoint({ checkpoint: parsed, overrideData: { b: 5 } })
+```
+
+Utilities:
+
+```typescript
+import { serializeCheckpoint, deserializeCheckpoint } from 'stepkit'
+
+const s = serializeCheckpoint({ stepName: 'double', output: { a: 4 } })
+const cp = deserializeCheckpoint<typeof parsed.output>(s)
+```
+
+#### Human-in-the-loop (concept)
+
+Minimal pattern using a shared pipeline and two tiny API routes (start + approve):
+
+```typescript
+// lib/pipeline.ts
+import { stepkit } from 'stepkit'
+
+// Domain fns (replace with real services)
+const loadPost = async (id: string) => ({ id, title: 'Hello' })
+const scoreRisk = ({ title }: { title: string }) => (title.trim() ? 'low' : 'high')
+const publishPost = async (_: { id: string; title: string }) => 'pub_123'
+
+export const pipeline = stepkit<{ postId: string }>()
+  .step('load', async ({ postId }) => ({ post: await loadPost(postId) }))
+  .step('moderate', ({ post }) => ({ risk: scoreRisk(post) }))
+  .step('publish', async ({ post }) => ({ publishedId: await publishPost(post) }))
+```
+
+```typescript
+// app/api/posts/[postId]/run/route.ts
+import { pipeline } from '@/lib/pipeline'
+// Substitute with your storage (e.g. @vercel/kv, db, etc.)
+const kv = { set: async (_: string, __: string) => {} }
+
+export const runtime = 'edge'
+
+export async function POST(_: Request, ctx: { params: { postId: string } }) {
+  let approvalId: string | null = null
+
+  await pipeline.run(
+    { postId: ctx.params.postId },
+    {
+      onStepComplete: async (e) => {
+        if (e.stepName === 'moderate') {
+          approvalId = `apr_${Date.now()}`
+          await kv.set(approvalId, e.checkpoint)
+          e.stopPipeline()
+        }
+      },
+    },
+  )
+
+  return Response.json({ approvalId })
+}
+```
+
+```typescript
+// app/api/approvals/[approvalId]/approve/route.ts
+import { pipeline } from '@/lib/pipeline'
+const kv = { get: async (_: string) => '' as string | null }
+
+export const runtime = 'edge'
+
+export async function POST(_: Request, ctx: { params: { approvalId: string } }) {
+  const checkpoint = await kv.get(ctx.params.approvalId)
+  if (!checkpoint) return new Response('Not found', { status: 404 })
+
+  const out = await pipeline.runCheckpoint(checkpoint)
+  return Response.json({ ok: true, out })
+}
+```
+
+### Stop Pipeline Early
+
+Use `e.stopPipeline()` from `onStepComplete` to end the run after a specific step.
+
+```typescript
+await stepkit<{ n: number }>()
+  .step('s1', ({ n }) => ({ n: n + 1 }))
+  .step('s2', ({ n }) => ({ n: n + 1 }))
+  .step('s3', ({ n }) => ({ n: n + 1 }))
+  .run(
+    { n: 0 },
+    {
+      onStepComplete: (e) => {
+        if (e.stepName === 's2') e.stopPipeline()
+      },
+    },
+  )
+// => { n: 2 }
+```
+
 ### Type Helpers
 
 Infer names, inputs, and outputs anywhere you need them.

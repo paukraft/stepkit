@@ -16,6 +16,17 @@ export type StepTimingInfo = {
   status: 'success' | 'failed' | 'skipped'
 }
 
+export type StepCompleteEvent<
+  TCtx extends Record<string, unknown>,
+  TStepName extends string = string
+> = {
+  stepName: TStepName
+  duration: number
+  context: TCtx
+  checkpoint: string
+  stopPipeline: () => void
+}
+
 export type InternalRuntime = {
   globalLog: boolean
   logFn: (message: string, ...args: unknown[]) => void
@@ -26,10 +37,12 @@ export type InternalRuntime = {
   showTotal: boolean
   stepTimings: StepTimingInfo[]
   pipelineStartTime: number
-  onStepComplete?: (stepName: string, output: Record<string, unknown>, duration: number) => void
+  onStepComplete?: (event: StepCompleteEvent<Record<string, unknown>, string>) => void
   onError?: (stepName: string, error: Error) => void
   namePrefix: string[]
   signal?: AbortSignal
+  stopController: { requested: boolean }
+  resumeController: { target: string | null }
 }
 
 export const formatDuration = (durationMs: number): string => {
@@ -47,9 +60,12 @@ export const getDisplayName = (runtime: InternalRuntime, name: string) => {
   return `${runtime.namePrefix.join('/')}/${name}`
 }
 
-export type PipelineConfig = {
+export type PipelineConfig<
+  TCtx extends Record<string, unknown> = Record<string, unknown>,
+  TStepName extends string = string
+> = {
   log?: boolean | LogConfig
-  onStepComplete?: (stepName: string, output: Record<string, unknown>, duration: number) => void
+  onStepComplete?: (event: StepCompleteEvent<TCtx, TStepName>) => void
   onError?: (stepName: string, error: Error) => void
   signal?: AbortSignal
 }

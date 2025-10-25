@@ -1,6 +1,50 @@
 import { describe, expect, it } from '@jest/globals'
 import { stepkit } from '../src/index'
 
+describe('Checkpoints', () => {
+  it('resumes from top-level checkpoint and overrides data', async () => {
+    const pipeline = stepkit<{ a: number; b?: number }>()
+      .step('add-one', ({ a }) => ({ a: a + 1 }))
+      .step('double', ({ a }) => ({ a: a * 2 }))
+      .step('finish', ({ a, b }) => ({ sum: (a ?? 0) + (b ?? 0) }))
+
+    let checkpointStr = ''
+    await pipeline.run(
+      { a: 1 },
+      {
+        onStepComplete: (e) => {
+          if (e.stepName === 'double') checkpointStr = e.checkpoint
+        }
+      }
+    )
+
+    const resumed = await pipeline.runCheckpoint(
+      { checkpoint: checkpointStr, overrideData: { b: 10 } },
+      { log: false }
+    )
+
+    expect(resumed).toHaveProperty('sum', (1 + 1) * 2 + 10)
+  })
+
+  it('stopPipeline prevents further steps', async () => {
+    const pipeline = stepkit<{ n: number }>()
+      .step('s1', ({ n }) => ({ n: n + 1 }))
+      .step('s2', ({ n }) => ({ n: n + 1 }))
+      .step('s3', ({ n }) => ({ n: n + 1 }))
+
+    const out = await pipeline.run(
+      { n: 0 },
+      {
+        onStepComplete: (e) => {
+          if (e.stepName === 's2') e.stopPipeline()
+        }
+      }
+    )
+
+    expect(out).toEqual({ n: 2 })
+  })
+})
+
 describe('Basic Pipeline', () => {
   it('should execute a simple pipeline with sequential steps', async () => {
     const result = await stepkit<{ userId: string }>()
@@ -51,4 +95,3 @@ describe('Basic Pipeline', () => {
     expect(steps).toEqual(['fetch-data', 'process-data', 'save-data'])
   })
 })
-

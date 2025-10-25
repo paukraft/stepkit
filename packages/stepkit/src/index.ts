@@ -1,8 +1,21 @@
 import { StepkitBuilder } from './builder'
 import type { PipelineConfig } from './runtime'
 
-export const stepkit = <TInput extends Record<string, unknown> = {}>(config?: PipelineConfig) =>
-  new StepkitBuilder<TInput, TInput>(config)
+export const stepkit = <TInput extends Record<string, unknown> = {}>(
+  config?: PipelineConfig<TInput, import('./index').StepNames<StepkitBuilder<TInput, TInput, any>>>
+) => new StepkitBuilder<TInput, TInput>(config)
+
+export type Checkpoint<T extends Record<string, unknown>> = {
+  stepName: string
+  output: T
+}
+
+export const serializeCheckpoint = <T extends Record<string, unknown>>(cp: Checkpoint<T>): string =>
+  JSON.stringify(cp)
+
+export const deserializeCheckpoint = <T extends Record<string, unknown>>(
+  s: string
+): Checkpoint<T> => JSON.parse(s) as Checkpoint<T>
 
 /**
  * Extract all step names from a pipeline builder.

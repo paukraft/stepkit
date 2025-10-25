@@ -1,5 +1,11 @@
 import { describe, expect, it } from '@jest/globals'
-import { stepkit, type StepInput, type StepNames, type StepOutput } from '../src/index'
+import {
+  serializeCheckpoint,
+  stepkit,
+  type StepInput,
+  type StepNames,
+  type StepOutput
+} from '../src/index'
 
 describe('Type Safety and Inference', () => {
   it('should infer types correctly through pipeline', async () => {
@@ -112,6 +118,42 @@ describe('Type Safety and Inference', () => {
 
     const result = await pipeline.run({ isPremium: false })
     expect(result.hasPremium).toBe(false)
+  })
+
+  it('runCheckpoint overrideData is strongly typed', async () => {
+    const pipe = stepkit<{ a: boolean; b?: boolean }>()
+      .step('flags', () => ({ a: true, b: true }))
+      .step('tail', ({ a, b }) => ({ a, b }))
+
+    let cp = ''
+    await pipe.run(
+      { a: false },
+      {
+        onStepComplete: (e) => {
+          if (e.stepName === 'flags') cp = e.checkpoint
+        }
+      }
+    )
+
+    // Type-level: overrideData must be Partial of final context
+    const out1 = await pipe.runCheckpoint({ checkpoint: cp, overrideData: { b: false } })
+    expect(out1).toEqual({ a: true, b: false })
+
+    // Also support passing a parsed checkpoint object to get exact type for overrideData
+    const parsed = { stepName: 'flags' as const, output: out1 }
+    const out2 = await pipe.runCheckpoint({ checkpoint: parsed, overrideData: { b: true } })
+    expect(out2).toEqual({ a: true, b: true })
+
+    // @ts-expect-error - unknown key should be rejected with parsed checkpoint and stepName overloads
+    await pipe.runCheckpoint({ checkpoint: parsed, overrideData: { notThere: '' } })
+
+    // Also with string checkpoint + explicit stepName we should get strict keys
+    const outStrict = await pipe.runCheckpoint({
+      checkpoint: serializeCheckpoint(parsed),
+      stepName: 'flags',
+      overrideData: { b: false }
+    })
+    expect(outStrict).toEqual({ a: true, b: false })
   })
 
   it('should handle transform type changes correctly', async () => {

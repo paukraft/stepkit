@@ -345,6 +345,119 @@ const guarded = stepkit()
 await guarded.run({}, { signal: ac.signal })
 ```
 
+### Checkpoints & Resume
+
+Resume a pipeline from any completed step using checkpoints emitted by `onStepComplete`. You may override fields shallowly when resuming.
+
+```typescript
+import { stepkit, serializeCheckpoint } from 'stepkit'
+
+const pipeline = stepkit<{ a: number; b?: number }>()
+  .step('add-one', ({ a }) => ({ a: a + 1 }))
+  .step('double', ({ a }) => ({ a: a * 2 }))
+  .step('finish', ({ a, b }) => ({ sum: (a ?? 0) + (b ?? 0) }))
+
+let checkpoint = ''
+await pipeline.run(
+  { a: 1 },
+  {
+    onStepComplete: (e) => {
+      if (e.stepName === 'double') checkpoint = e.checkpoint
+    },
+  },
+)
+
+// Resume later with an override
+const resumed = await pipeline.runCheckpoint({ checkpoint, overrideData: { b: 10 } })
+```
+
+Utilities:
+
+```typescript
+import { serializeCheckpoint, deserializeCheckpoint } from 'stepkit'
+
+const s = serializeCheckpoint({ stepName: 'double', output: { a: 4 } })
+const cp = deserializeCheckpoint<typeof parsed.output>(s)
+```
+
+#### Human-in-the-loop (concept)
+
+Concise Next.js-style start and approve routes with a shared pipeline:
+
+```typescript
+// lib/flow.ts
+import { stepkit } from 'stepkit'
+
+const loadItem = async (id: string) => ({ id, content: 'hi' })
+const needsReview = ({ content }: { content: string }) => content.length > 0
+const finalize = async (_: { id: string }) => 'ok'
+
+export const flow = stepkit<{ id: string }>()
+  .step('load', async ({ id }) => ({ item: await loadItem(id) }))
+  .step('review', ({ item }) => ({ requiresApproval: needsReview(item) }))
+  .step('finish', async ({ item }) => ({ result: await finalize(item) }))
+```
+
+```typescript
+// app/api/items/[id]/run/route.ts
+import { flow } from '@/lib/flow'
+const kv = { set: async (_: string, __: string) => {} }
+
+export const runtime = 'edge'
+
+export async function POST(_: Request, ctx: { params: { id: string } }) {
+  let approvalId: string | null = null
+  await flow.run(
+    { id: ctx.params.id },
+    {
+      onStepComplete: async (e) => {
+        if (e.stepName === 'review') {
+          approvalId = `apr_${Date.now()}`
+          await kv.set(approvalId, e.checkpoint)
+          e.stopPipeline()
+        }
+      },
+    },
+  )
+  return Response.json({ approvalId })
+}
+```
+
+```typescript
+// app/api/approvals/[approvalId]/approve/route.ts
+import { flow } from '@/lib/flow'
+const kv = { get: async (_: string) => '' as string | null }
+
+export const runtime = 'edge'
+
+export async function POST(_: Request, ctx: { params: { approvalId: string } }) {
+  const checkpoint = await kv.get(ctx.params.approvalId)
+  if (!checkpoint) return new Response('Not found', { status: 404 })
+  const out = await flow.runCheckpoint(checkpoint)
+  return Response.json({ ok: true, out })
+}
+```
+
+### Stop Pipeline Early
+
+Call `e.stopPipeline()` from `onStepComplete` to end a run after a specific step.
+
+```typescript
+await stepkit<{ n: number }>()
+  .step('s1', ({ n }) => ({ n: n + 1 }))
+  .step('s2', ({ n }) => ({ n: n + 1 }))
+  .step('s3', ({ n }) => ({ n: n + 1 }))
+  .run(
+    { n: 0 },
+    {
+      onStepComplete: (e) => {
+        if (e.stepName === 's2') e.stopPipeline()
+      },
+    },
+  )
+// => { n: 2 }
+```
+
 ### Type Helpers
 
 Infer names, inputs, and outputs anywhere you need them.

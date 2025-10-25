@@ -1,3 +1,4 @@
+import type { StepNames as BuilderStepNames, StepOutput as BuilderStepOutput } from './index'
 import {
   formatDuration,
   getDisplayName,
@@ -25,7 +26,7 @@ type KnownKeys<T> = {
 
 type DiffNewKeys<TNew, TOld> = Omit<TNew, KnownKeys<TOld>>
 
-type StepExecutor<TCtx = unknown> = {
+type StepExecutor<TCtx extends Record<string, unknown> = Record<string, unknown>> = {
   name: string
   fn: (context: TCtx, runtime?: InternalRuntime) => Promise<Record<string, unknown>>
   config: StepConfig<TCtx>
@@ -48,7 +49,9 @@ type StepExecutor<TCtx = unknown> = {
   )[]
 }
 
-type CaseReturnContext<TCtx, TCase> = TCase extends { then: (b: any) => infer R }
+type CaseReturnContext<TCtx extends Record<string, unknown>, TCase> = TCase extends {
+  then: (b: any) => infer R
+}
   ? R extends StepkitBuilder<any, infer TSubCtx, any>
     ? DiffNewKeys<TSubCtx, TCtx>
     : never
@@ -66,11 +69,14 @@ type CaseReturnContext<TCtx, TCase> = TCase extends { then: (b: any) => infer R 
             ? DiffNewKeys<TSubCtx5, TCtx>
             : never
 
-type MergeBranchOutputs<TCtx, TCases extends readonly unknown[]> = Partial<
-  UnionToIntersection<CaseReturnContext<TCtx, TCases[number]>>
->
+type MergeBranchOutputs<
+  TCtx extends Record<string, unknown>,
+  TCases extends readonly unknown[]
+> = Partial<UnionToIntersection<CaseReturnContext<TCtx, TCases[number]>>>
 
-type CaseSubHistory<TCtx, TCase> = TCase extends { then: (b: any) => infer R }
+type CaseSubHistory<TCtx extends Record<string, unknown>, TCase> = TCase extends {
+  then: (b: any) => infer R
+}
   ? R extends StepkitBuilder<any, any, infer TH>
     ? TH
     : never
@@ -92,7 +98,11 @@ type CaseNameOf<TCase> = TCase extends { default: any }
     ? Extract<N, string>
     : 'branch-case'
 
-type CasePrefixedHistory<TCtx, TCase, TName extends string> = PrefixHistory<
+type CasePrefixedHistory<
+  TCtx extends Record<string, unknown>,
+  TCase,
+  TName extends string
+> = PrefixHistory<
   CaseSubHistory<TCtx, TCase> extends readonly { name: string; ctx: unknown }[]
     ? CaseSubHistory<TCtx, TCase>
     : readonly [],
@@ -100,7 +110,7 @@ type CasePrefixedHistory<TCtx, TCase, TName extends string> = PrefixHistory<
 >
 
 type MergeBranchHistory<
-  TCtx,
+  TCtx extends Record<string, unknown>,
   TCases extends readonly unknown[],
   TName extends string
 > = TCases extends readonly [infer F, ...infer R]
@@ -110,17 +120,17 @@ type MergeBranchHistory<
   : never
 
 // --- Variadic item support (mixing functions and sub-pipelines) ---
-type ItemOutput<TCtx, T> =
+type ItemOutput<TCtx extends Record<string, unknown>, T> =
   T extends StepFunction<TCtx, infer O>
     ? O
     : T extends StepkitBuilder<any, infer TSubOut, any>
       ? DiffNewKeys<TSubOut, TCtx>
       : never
 
-type ItemsOutputs<TCtx, TItems extends readonly unknown[]> = TItems extends readonly [
-  infer F,
-  ...infer R
-]
+type ItemsOutputs<
+  TCtx extends Record<string, unknown>,
+  TItems extends readonly unknown[]
+> = TItems extends readonly [infer F, ...infer R]
   ? ItemOutput<TCtx, F> | ItemsOutputs<TCtx, Extract<R, readonly unknown[]>>
   : never
 
@@ -137,16 +147,24 @@ type ItemsPrefixedHistory<
   : readonly []
 
 export class StepkitBuilder<
-  TInput,
-  TContext,
+  TInput extends Record<string, unknown>,
+  TContext extends Record<string, unknown>,
   THistory extends readonly { name: string; ctx: unknown }[] = readonly []
 > {
   private steps: StepExecutor<TContext>[] = []
-  private config: PipelineConfig
+  private config: PipelineConfig<
+    TContext,
+    BuilderStepNames<StepkitBuilder<TInput, TContext, THistory>>
+  >
   readonly __history!: THistory
   private circuitState = new Map<string, { failures: number; openedAt: number | null }>()
 
-  constructor(config: PipelineConfig = {}) {
+  constructor(
+    config: PipelineConfig<
+      TContext,
+      BuilderStepNames<StepkitBuilder<TInput, TContext, THistory>>
+    > = {}
+  ) {
     this.config = config
   }
 
@@ -237,7 +255,7 @@ export class StepkitBuilder<
   step<
     TName extends string,
     TSubIn extends Record<string, unknown>,
-    TSubOut,
+    TSubOut extends Record<string, unknown>,
     TSubHistory extends readonly { name: string; ctx: unknown }[],
     TOutputs extends readonly Record<string, unknown>[]
   >(
@@ -272,7 +290,7 @@ export class StepkitBuilder<
     TName extends string,
     TConfig extends Omit<StepConfig<TContext>, 'name'> & { name: TName },
     TSubIn extends Record<string, unknown>,
-    TSubOut,
+    TSubOut extends Record<string, unknown>,
     TSubHistory extends readonly { name: string; ctx: unknown }[]
   >(
     config: TConfig,
@@ -300,7 +318,7 @@ export class StepkitBuilder<
   step<
     TOutputs extends readonly Record<string, unknown>[],
     TSubIn extends Record<string, unknown>,
-    TSubOut,
+    TSubOut extends Record<string, unknown>,
     TSubHistory extends readonly { name: string; ctx: unknown }[]
   >(
     sub: TContext extends TSubIn ? StepkitBuilder<TSubIn, TSubOut, TSubHistory> : never,
@@ -692,7 +710,7 @@ export class StepkitBuilder<
       if (runtime) {
         const nestedRuntime: InternalRuntime = {
           ...runtime,
-          namePrefix: [...runtime.namePrefix, caseName]
+          namePrefix: [...runtime.namePrefix, stepName, caseName]
         }
         const subContext = await built.runWithRuntime(context, nestedRuntime)
         return computePatch(
@@ -795,7 +813,10 @@ export class StepkitBuilder<
     return newBuilder as any
   }
 
-  run = async (input: TInput, options?: PipelineConfig): Promise<TContext> => {
+  run = async (
+    input: TInput,
+    options?: PipelineConfig<TContext, BuilderStepNames<StepkitBuilder<TInput, TContext, THistory>>>
+  ): Promise<TContext> => {
     const configLog = this.config.log
     const optionsLog = options?.log
     const globalLog =
@@ -827,10 +848,6 @@ export class StepkitBuilder<
     const stepTimings: StepTimingInfo[] = []
     const pipelineStartTime = Date.now()
 
-    const onStepComplete = (stepName: string, output: any, duration: number) => {
-      this.config.onStepComplete?.(stepName, output, duration)
-      options?.onStepComplete?.(stepName, output, duration)
-    }
     const onError = (stepName: string, error: Error) => {
       this.config.onError?.(stepName, error)
       options?.onError?.(stepName, error)
@@ -846,10 +863,21 @@ export class StepkitBuilder<
       showTotal,
       stepTimings,
       pipelineStartTime,
-      onStepComplete,
+      onStepComplete: (event) => {
+        // Bubble event to both config and run options
+        ;(
+          this.config as PipelineConfig<
+            TContext,
+            BuilderStepNames<StepkitBuilder<TInput, TContext, THistory>>
+          >
+        ).onStepComplete?.(event as any)
+        options?.onStepComplete?.(event as any)
+      },
       onError,
       namePrefix: [],
-      signal: options?.signal ?? this.config.signal
+      signal: options?.signal ?? this.config.signal,
+      stopController: { requested: false },
+      resumeController: { target: null }
     }
 
     if (globalLog) logFn('🚀 Starting pipeline with input:', input)
@@ -900,6 +928,29 @@ export class StepkitBuilder<
     for (const stepExecutor of this.steps) {
       const stepLog = stepExecutor.config.log ?? runtime.globalLog
       const displayName = getDisplayName(runtime, stepExecutor.name)
+
+      // Resume-from-checkpoint: skip logic
+      const target = runtime.resumeController?.target ?? null
+      if (target) {
+        const isContainer = target.startsWith(displayName + '/')
+        if (displayName === target) {
+          // This is the exact checkpoint step: skip executing it and clear target
+          if (stepLog) runtime.logFn(`\n⏭️  Step: ${displayName} (resume-skip)`)
+          if (runtime.stopwatchEnabled)
+            runtime.stepTimings.push({ name: displayName, duration: 0, status: 'skipped' })
+          runtime.resumeController.target = null
+          continue
+        }
+        if (!isContainer) {
+          // Still before the container that will include the checkpoint; skip
+          if (stepLog) runtime.logFn(`\n⏭️  Step: ${displayName} (resume-skip)`)
+          if (runtime.stopwatchEnabled)
+            runtime.stepTimings.push({ name: displayName, duration: 0, status: 'skipped' })
+          continue
+        }
+        // isContainer === true: execute this step to descend into nested pipeline where
+        // the nested runtime will encounter and clear the target when matched.
+      }
 
       if (runtime.signal?.aborted) {
         const abortError = new Error('Pipeline aborted')
@@ -1062,7 +1113,17 @@ export class StepkitBuilder<
           }
           if (runtime.stopwatchEnabled)
             runtime.stepTimings.push({ name: displayName, duration, status: 'success' })
-          runtime.onStepComplete?.(displayName, stepOutput, duration)
+          const checkpoint = JSON.stringify({ stepName: displayName, output: deepClone(context) })
+          runtime.onStepComplete?.({
+            stepName: displayName,
+            duration,
+            context: deepClone(context),
+            checkpoint,
+            stopPipeline: () => {
+              if (runtime.stopController) runtime.stopController.requested = true
+            }
+          })
+          if (runtime.stopController?.requested) break
         } else {
           // Steps can return void (treated as {})
           const normalizedOutput = stepOutput ?? {}
@@ -1083,7 +1144,17 @@ export class StepkitBuilder<
           }
           if (runtime.stopwatchEnabled)
             runtime.stepTimings.push({ name: displayName, duration, status: 'success' })
-          runtime.onStepComplete?.(displayName, normalizedOutput, duration)
+          const checkpoint = JSON.stringify({ stepName: displayName, output: deepClone(context) })
+          runtime.onStepComplete?.({
+            stepName: displayName,
+            duration,
+            context: deepClone(context),
+            checkpoint,
+            stopPipeline: () => {
+              if (runtime.stopController) runtime.stopController.requested = true
+            }
+          })
+          if (runtime.stopController?.requested) break
         }
       } catch (error) {
         // Circuit breaker state management (on failure)
@@ -1118,6 +1189,128 @@ export class StepkitBuilder<
       }
     }
     return context
+  }
+
+  // Overloads for strict typing
+  runCheckpoint(
+    checkpoint: string,
+    options?: PipelineConfig<TContext, BuilderStepNames<StepkitBuilder<TInput, TContext, THistory>>>
+  ): Promise<TContext>
+  runCheckpoint(
+    params: { checkpoint: string; overrideData?: Partial<TContext> },
+    options?: PipelineConfig<TContext, BuilderStepNames<StepkitBuilder<TInput, TContext, THistory>>>
+  ): Promise<TContext>
+  runCheckpoint<TStepName extends BuilderStepNames<StepkitBuilder<TInput, TContext, THistory>>>(
+    params: {
+      checkpoint: {
+        stepName: TStepName
+        output: BuilderStepOutput<StepkitBuilder<TInput, TContext, THistory>, TStepName>
+      }
+      overrideData?: Partial<
+        BuilderStepOutput<StepkitBuilder<TInput, TContext, THistory>, TStepName>
+      >
+    },
+    options?: PipelineConfig<TContext, BuilderStepNames<StepkitBuilder<TInput, TContext, THistory>>>
+  ): Promise<TContext>
+  runCheckpoint<TStepName extends BuilderStepNames<StepkitBuilder<TInput, TContext, THistory>>>(
+    params: {
+      checkpoint: string
+      stepName: TStepName
+      overrideData?: Partial<
+        BuilderStepOutput<StepkitBuilder<TInput, TContext, THistory>, TStepName>
+      >
+    },
+    options?: PipelineConfig<TContext, BuilderStepNames<StepkitBuilder<TInput, TContext, THistory>>>
+  ): Promise<TContext>
+  runCheckpoint(
+    arg:
+      | string
+      | { checkpoint: string; overrideData?: Partial<TContext> }
+      | {
+          checkpoint: { stepName: string; output: Record<string, unknown> }
+          overrideData?: Record<string, unknown>
+        }
+      | { checkpoint: string; stepName: string; overrideData?: Record<string, unknown> },
+    options?: PipelineConfig<TContext, BuilderStepNames<StepkitBuilder<TInput, TContext, THistory>>>
+  ): Promise<TContext> {
+    const parsedAny: any = typeof arg === 'string' ? { checkpoint: arg } : arg
+    const cp: { stepName: string; output: Record<string, unknown> } =
+      typeof parsedAny.checkpoint === 'string'
+        ? (JSON.parse(parsedAny.checkpoint) as {
+            stepName: string
+            output: Record<string, unknown>
+          })
+        : (parsedAny.checkpoint as { stepName: string; output: Record<string, unknown> })
+
+    const base = deepClone(cp.output)
+    const override = (parsedAny.overrideData ?? undefined) as Record<string, unknown> | undefined
+    const startContext = override ? mergeContext(base, override, 'override') : base
+
+    // Build runtime like in run(), but set resume target
+    const configLog = this.config.log
+    const optionsLog = options?.log
+    const globalLog =
+      optionsLog !== undefined
+        ? typeof optionsLog === 'boolean'
+          ? optionsLog
+          : true
+        : typeof configLog === 'boolean'
+          ? configLog
+          : configLog !== undefined
+    const configLogFn = typeof configLog === 'object' ? configLog.logFn : undefined
+    const optionsLogFn = typeof optionsLog === 'object' ? optionsLog.logFn : undefined
+    const logFn = optionsLogFn ?? configLogFn ?? console.log
+    const configErrorLogFn = typeof configLog === 'object' ? configLog.errorLogFn : undefined
+    const optionsErrorLogFn = typeof optionsLog === 'object' ? optionsLog.errorLogFn : undefined
+    const errorLogFn = optionsErrorLogFn ?? configErrorLogFn ?? console.error
+    const configStopwatch = typeof configLog === 'object' ? configLog.stopwatch : undefined
+    const optionsStopwatch = typeof optionsLog === 'object' ? optionsLog.stopwatch : undefined
+    const stopwatchConfig = optionsStopwatch ?? configStopwatch
+    const stopwatchEnabled = stopwatchConfig !== undefined && stopwatchConfig !== false
+    const showStepDuration =
+      typeof stopwatchConfig === 'object'
+        ? (stopwatchConfig.showStepDuration ?? true)
+        : stopwatchEnabled
+    const showSummary =
+      typeof stopwatchConfig === 'object' ? (stopwatchConfig.showSummary ?? true) : stopwatchEnabled
+    const showTotal =
+      typeof stopwatchConfig === 'object' ? (stopwatchConfig.showTotal ?? true) : stopwatchEnabled
+    const stepTimings: StepTimingInfo[] = []
+    const pipelineStartTime = Date.now()
+
+    const onError = (stepName: string, error: Error) => {
+      this.config.onError?.(stepName, error)
+      options?.onError?.(stepName, error)
+    }
+
+    const runtime: InternalRuntime = {
+      globalLog,
+      logFn,
+      errorLogFn,
+      stopwatchEnabled,
+      showStepDuration,
+      showSummary,
+      showTotal,
+      stepTimings,
+      pipelineStartTime,
+      onStepComplete: (event) => {
+        ;(
+          this.config as PipelineConfig<
+            TContext,
+            BuilderStepNames<StepkitBuilder<TInput, TContext, THistory>>
+          >
+        ).onStepComplete?.(event as any)
+        options?.onStepComplete?.(event as any)
+      },
+      onError,
+      namePrefix: [],
+      signal: options?.signal ?? this.config.signal,
+      stopController: { requested: false },
+      resumeController: { target: cp.stepName }
+    }
+
+    if (globalLog) logFn('🚀 Resuming pipeline from checkpoint step:', cp.stepName)
+    return this.runWithRuntime(startContext as TInput, runtime)
   }
 
   describe(): string[] {
