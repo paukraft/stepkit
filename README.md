@@ -472,6 +472,10 @@ type FinalOutput = StepOutput<typeof simple> // { id: string; name: string; resu
 
 Built as a lightweight alternative to larger frameworks. No ceremony, just compose pipelines with full type safety.
 
+## Releasing
+
+See `RELEASING.md` for the step-by-step publish guide.
+
 ## License
 
 MIT

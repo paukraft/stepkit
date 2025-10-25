@@ -518,6 +518,10 @@ type FinalOutput = StepOutput<typeof simple> // { id: string; name: string; resu
 
 Built as a lightweight alternative to larger frameworks. No ceremony, just compose pipelines with full type safety.
 
+## Contributing & Releases
+
+- See the release guide in the monorepo root: `../RELEASING.md`.
+
 ## License
 
 MIT
